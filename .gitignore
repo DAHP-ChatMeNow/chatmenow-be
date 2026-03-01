@@ -7,8 +7,8 @@ pnpm-debug.log*
 
 # Env
 .env
-.env.*
-!.env.example
+
+
 
 # Logs
 logs
