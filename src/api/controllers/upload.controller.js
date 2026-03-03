@@ -1,89 +1,66 @@
-const {
-  formatBufferToDataURI,
-  uploadToCloudinary,
-} = require("../middleware/storage");
-const cloudinary = require("../../config/cloudinary");
+const uploadService = require("../service/upload.service");
 
-const handleUpload = async (req) => {
-  if (!req.file) {
-    throw new Error("Không tìm thấy file ảnh");
-  }
-  const fileDataUri = formatBufferToDataURI(req.file);
-  const uploadResult = await uploadToCloudinary(fileDataUri.content);
-  return uploadResult.secure_url;
-};
-
-const uploadAvatar = async (req, res) => {
+// Upload avatar to S3
+const uploadImage = async (req, res) => {
   try {
-    const cloudinaryUrl = await handleUpload(req);
-
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user.id,
-      { $set: { "profile.photos.0": cloudinaryUrl } },
-      { new: true },
+    const updatedUser = await uploadService.uploadAvatar(
+      req.user.userId,
+      req.file,
     );
-    res.status(200).json(updatedUser);
+
+    res.status(200).json({
+      msg: "Upload avatar thành công",
+      user: {
+        ...updatedUser.toObject(),
+      },
+    });
   } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ msg: err.message });
+    }
     res
       .status(500)
       .json({ msg: "Lỗi server khi upload avatar", error: err.message });
   }
 };
 
-const uploadPhoto = async (req, res) => {
+// Delete avatar và reset về avatar mặc định
+const deleteAvatar = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    const updatedUser = await uploadService.deleteAvatar(req.user.userId);
 
-    if (user.profile.photos.length >= 6) {
-      return res
-        .status(400)
-        .json({ msg: "Bạn đã đạt số lượng ảnh tối đa (6)" });
-    }
-
-    const cloudinaryUrl = await handleUpload(req);
-
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user.id,
-      { $push: { "profile.photos": cloudinaryUrl } },
-      { new: true },
-    );
-
-    res.status(200).json(updatedUser);
+    res.status(200).json({
+      msg: "Đã xóa avatar và reset về avatar mặc định",
+      user: {
+        ...updatedUser.toObject(),
+      },
+    });
   } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ msg: err.message });
+    }
     res
       .status(500)
-      .json({ msg: "Lỗi server khi thêm ảnh", error: err.message });
+      .json({ msg: "Lỗi server khi xóa avatar", error: err.message });
   }
 };
 
-const deletePhoto = async (req, res) => {
-  const { photoUrl } = req.body;
-  if (!photoUrl) {
-    return res.status(400).json({ msg: "Vui lòng cung cấp URL ảnh" });
-  }
-
+const getPresignedUrl = async (req, res) => {
   try {
-    const publicIdWithFormat = photoUrl.split("/").slice(-1).join("/");
-    const publicId = publicIdWithFormat.split(".")[0];
-
-    if (publicId) {
-      await cloudinary.uploader.destroy(publicId);
-    }
-
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user.id,
-      { $pull: { "profile.photos": photoUrl } },
-      { new: true },
-    );
-
-    res.status(200).json(updatedUser);
+    const result = await uploadService.getPresignedUrl(req.query.key);
+    res.status(200).json(result);
   } catch (err) {
-    res.status(500).json({ msg: "Lỗi server khi xóa ảnh", error: err.message });
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ msg: err.message });
+    }
+    res
+      .status(500)
+      .json({ msg: "Lỗi server khi tạo presigned URL", error: err.message });
   }
 };
 
 module.exports = {
-  uploadAvatar,
-  uploadPhoto,
-  deletePhoto,
+  uploadImage,
+  deleteAvatar,
+  getPresignedUrl,
 };

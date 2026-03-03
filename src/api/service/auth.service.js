@@ -1,6 +1,7 @@
 const Account = require("../models/account.model");
 const User = require("../models/user.model");
 const jwt = require("jsonwebtoken");
+const { generateDefaultAvatar } = require("../../utils/avatar.helper");
 
 class AuthService {
   generateToken(accountId, userId) {
@@ -35,7 +36,7 @@ class AuthService {
     const newUser = await User.create({
       accountId: newAccount._id,
       displayName: displayName,
-      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=random`,
+      avatar: generateDefaultAvatar(displayName),
     });
 
     const token = this.generateToken(newAccount._id, newUser._id);

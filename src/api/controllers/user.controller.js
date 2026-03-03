@@ -68,6 +68,18 @@ exports.updateAvatar = async (req, res) => {
       req.body.avatar,
     );
 
+    // ✅ Emit socket event để notify friends về avatar mới
+    const io = req.app.get("io");
+    const friends = updatedUser.friends || [];
+
+    friends.forEach((friendId) => {
+      io.to(friendId.toString()).emit("friend_avatar_updated", {
+        userId: req.user.userId,
+        avatar: updatedUser.avatar,
+        displayName: updatedUser.displayName,
+      });
+    });
+
     res.status(200).json({
       success: true,
       message: "Cập nhật avatar thành công",
@@ -329,6 +341,25 @@ exports.removeFriend = async (req, res) => {
       return res.status(error.statusCode).json({ message: error.message });
     }
     res.status(500).json({ message: error.message });
+  }
+};
+
+// Lấy avatar URL của user
+exports.getUserAvatar = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const result = await userService.getUserAvatar(userId);
+
+    res.status(200).json({
+      success: true,
+      avatar: result.avatar,
+      displayName: result.displayName,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
   }
 };
 

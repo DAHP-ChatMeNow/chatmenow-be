@@ -3,15 +3,15 @@ const router = express.Router();
 const { authMiddleware } = require("../middleware/authMiddleware");
 const { multerUploads } = require("../middleware/storage");
 const {
-  uploadAvatar,
-  uploadPhoto,
-  deletePhoto,
+  uploadImage,
+  deleteAvatar,
+  getPresignedUrl,
 } = require("../controllers/upload.controller");
 
-router.post("/avatar", authMiddleware, multerUploads, uploadAvatar);
+router.post("/avatar", authMiddleware, multerUploads, uploadImage);
 
-router.post("/photo", authMiddleware, multerUploads, uploadPhoto);
+router.delete("/avatar", authMiddleware, deleteAvatar);
 
-router.delete("/photo", authMiddleware, deletePhoto);
+router.get("/presign-get", authMiddleware, getPresignedUrl);
 
 module.exports = router;

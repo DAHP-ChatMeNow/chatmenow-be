@@ -10,9 +10,6 @@ const {
 } = require("../../constants");
 
 class UserService {
-  /**
-   * Tìm kiếm người dùng
-   */
   async searchUsers(keyword, currentUserId) {
     if (!keyword) {
       throw {
@@ -31,7 +28,6 @@ class UserService {
 
     const accountIds = accountsByContact.map((acc) => acc._id);
 
-    // Tìm user
     const users = await User.find({
       $or: [
         { displayName: { $regex: keyword, $options: "i" } },
@@ -43,10 +39,8 @@ class UserService {
       .select("displayName avatar bio accountId")
       .limit(20);
 
-    // Lấy currentUser
     const currentUser = await User.findById(currentUserId).select("friends");
 
-    // Gắn trạng thái bạn bè
     const usersWithFriendStatus = await Promise.all(
       users.map(async (user) => {
         const isFriend = currentUser.friends.includes(user._id);
@@ -86,12 +80,9 @@ class UserService {
     };
   }
 
-  /**
-   * Lấy thông tin profile của user
-   */
   async getUserProfile(userId) {
     // Validate ObjectId format
-    if (!userId || !userId.match(/^[0-9a-fA-F]{24}$/)) {
+    if (!userId) {
       throw {
         statusCode: 400,
         message: "User ID không hợp lệ",
@@ -154,9 +145,6 @@ class UserService {
     return updatedUser;
   }
 
-  /**
-   * Cập nhật avatar
-   */
   async updateAvatar(userId, avatar) {
     if (!avatar) {
       throw {
@@ -169,7 +157,9 @@ class UserService {
       userId,
       { avatar },
       { new: true, runValidators: true },
-    ).select("-__v");
+    )
+      .select("-__v")
+      .populate("friends", "_id");
 
     if (!updatedUser) {
       throw {
@@ -179,6 +169,32 @@ class UserService {
     }
 
     return updatedUser;
+  }
+
+  /**
+   * Lấy avatar URL của user
+   */
+  async getUserAvatar(userId) {
+    if (!userId || !userId.match(/^[0-9a-fA-F]{24}$/)) {
+      throw {
+        statusCode: 400,
+        message: "User ID không hợp lệ",
+      };
+    }
+
+    const user = await User.findById(userId).select("avatar displayName");
+
+    if (!user) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    return {
+      avatar: user.avatar || null,
+      displayName: user.displayName,
+    };
   }
 
   /**

@@ -123,7 +123,6 @@ exports.getPrivateConversationPartner = async (req, res) => {
   }
 };
 
-// Thêm thành viên vào nhóm
 exports.addMemberToGroup = async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -145,7 +144,6 @@ exports.addMemberToGroup = async (req, res) => {
   }
 };
 
-// Xóa thành viên khỏi nhóm
 exports.removeMemberFromGroup = async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -166,7 +164,7 @@ exports.removeMemberFromGroup = async (req, res) => {
   }
 };
 
-// Giải tán nhóm (chỉ admin)
+// Only admin can dissolve the group, all members will be removed and conversation will be deleted
 exports.dissolveGroup = async (req, res) => {
   try {
     const userId = req.user.userId;

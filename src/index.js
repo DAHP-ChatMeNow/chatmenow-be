@@ -4,7 +4,6 @@ const { Server } = require("socket.io");
 const connectDB = require("./config/db");
 const routes = require("./api/routes/index");
 const initializeSocket = require("./sockets/socket.handler");
-const cloudinary = require("./config/cloudinary");
 const cors = require("cors");
 const dotenv = require("dotenv");
 
@@ -30,7 +29,6 @@ const io = new Server(server, {
 });
 
 app.set("io", io);
-app.set("cloudinary", cloudinary);
 
 initializeSocket(io);
 
