@@ -2,10 +2,13 @@ const express = require("express");
 const router = express.Router();
 const postController = require("../controllers/post.controller");
 const { verifyToken } = require("../middleware/authMiddleware");
+const { multerPostMedia } = require("../middleware/storage");
 
-router.post("/", verifyToken, postController.createPost);
+router.post("/", verifyToken, multerPostMedia, postController.createPost);
 
 router.get("/feed", verifyToken, postController.getNewsFeed);
+
+router.get("/me", verifyToken, postController.getMyPosts);
 
 router.get("/:id", verifyToken, postController.getPostDetail);
 

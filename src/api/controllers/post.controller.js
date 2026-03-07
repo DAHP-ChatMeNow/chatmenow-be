@@ -22,9 +22,30 @@ exports.getNewsFeed = async (req, res) => {
 exports.createPost = async (req, res) => {
   try {
     const userId = req.user.userId;
-    const populatedPost = await postService.createPost(userId, req.body);
+    const files = req.files || []; // Files từ multer middleware
+
+    const populatedPost = await postService.createPost(userId, req.body, files);
 
     res.status(201).json(populatedPost);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getMyPosts = async (req, res) => {
+  try {
+    const result = await postService.getMyPosts(req.user.userId, req.query);
+
+    res.status(200).json({
+      success: true,
+      posts: result.posts,
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+    });
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ message: error.message });

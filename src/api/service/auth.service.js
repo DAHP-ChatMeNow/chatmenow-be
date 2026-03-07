@@ -70,6 +70,7 @@ class AuthService {
     return {
       token,
       user,
+      role: account.role,
     };
   }
 
