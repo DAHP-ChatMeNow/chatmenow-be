@@ -1,8 +1,3 @@
-// Export tất cả constants từ các module con
-// Có thể import theo 2 cách:
-// 1. Import all: const { CONVERSATION_TYPES, POST_PRIVACY } = require('../../constants');
-// 2. Import specific module: const { CONVERSATION_TYPES } = require('../../constants/conversation.constants');
-
 const {
   CONVERSATION_TYPES,
   MEMBER_ROLES,
