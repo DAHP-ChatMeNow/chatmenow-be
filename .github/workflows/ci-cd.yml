@@ -8,9 +8,10 @@ on:
   pull_request:
     branches:
       - prod
+
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: dahp-chatmenow/chatmenow-be
 
 concurrency:
   group: production-deploy
@@ -50,7 +51,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: ci
 
-    # chỉ build image khi push prod
     if: github.ref == 'refs/heads/prod' && github.event_name == 'push'
 
     permissions:
@@ -75,7 +75,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ghcr.io/${{ env.IMAGE_NAME }}
           tags: |
             type=sha,prefix=sha-,format=short
             type=raw,value=latest
@@ -116,7 +116,7 @@ jobs:
           script: |
             set -e
 
-            IMAGE="ghcr.io/${{ github.repository }}:latest"
+            IMAGE="ghcr.io/dahp-chatmenow/chatmenow-be:latest"
             CONTAINER="chatmenow-be"
 
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -140,4 +140,4 @@ jobs:
             echo "Cleaning unused images..."
             docker image prune -f
 
-            echo "Deploy thành công"
+            echo "Deploy thành công 🚀"
