@@ -1,4 +1,6 @@
 const jwt = require("jsonwebtoken");
+const Account = require("../models/account.model");
+const { USER_ROLES } = require("../../constants");
 
 exports.authMiddleware = (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -25,3 +27,15 @@ exports.authMiddleware = (req, res, next) => {
 };
 
 exports.verifyToken = exports.authMiddleware;
+
+exports.requireAdmin = async (req, res, next) => {
+  try {
+    const account = await Account.findById(req.user.accountId).select("role");
+    if (!account || account.role !== USER_ROLES.ADMIN) {
+      return res.status(403).json({ message: "Bạn không có quyền truy cập" });
+    }
+    next();
+  } catch (error) {
+    return res.status(500).json({ message: "Lỗi server" });
+  }
+};

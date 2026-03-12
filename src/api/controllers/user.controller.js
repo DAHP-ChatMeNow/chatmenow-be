@@ -404,3 +404,20 @@ exports.getUserEmailById = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+exports.getAllUsers = async (req, res) => {
+  try {
+    const { page, limit, search } = req.query;
+    const result = await userService.getAllUsers({ page, limit, search });
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};

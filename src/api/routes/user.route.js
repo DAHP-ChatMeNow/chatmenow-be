@@ -1,9 +1,12 @@
 const express = require("express");
 const router = express.Router();
 const userController = require("../controllers/user.controller");
-const { verifyToken } = require("../middleware/authMiddleware");
+const { verifyToken, requireAdmin } = require("../middleware/authMiddleware");
 
 // ====== SPECIFIC ROUTES FIRST (must be before dynamic routes) ======
+
+// Admin: Lấy danh sách tất cả người dùng
+router.get("/all", verifyToken, requireAdmin, userController.getAllUsers);
 
 router.get("/search", verifyToken, userController.searchUsers);
 

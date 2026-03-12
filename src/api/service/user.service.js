@@ -791,6 +791,54 @@ class UserService {
       phoneNumber: user.accountId.phoneNumber || "",
     };
   }
+
+  /**
+   * Lấy danh sách tất cả người dùng (chỉ admin)
+   */
+  async getAllUsers({ page = 1, limit = 20, search = "" }) {
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build filter
+    const filter = {};
+    if (search) {
+      filter.displayName = { $regex: search, $options: "i" };
+    }
+
+    const [users, total] = await Promise.all([
+      User.find(filter)
+        .populate(
+          "accountId",
+          "email phoneNumber role isPremium premiumExpiryDate isActive createdAt",
+        )
+        .select("displayName avatar bio isOnline lastSeen createdAt")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum),
+      User.countDocuments(filter),
+    ]);
+
+    return {
+      users: users.map((user) => ({
+        _id: user._id,
+        displayName: user.displayName,
+        avatar: user.avatar,
+        bio: user.bio,
+        isOnline: user.isOnline,
+        lastSeen: user.lastSeen,
+        email: user.accountId?.email || "",
+        phoneNumber: user.accountId?.phoneNumber || "",
+        role: user.accountId?.role || "user",
+        isPremium: user.accountId?.isPremium || false,
+        isActive: user.accountId?.isActive ?? true,
+        createdAt: user.createdAt,
+      })),
+      total,
+      page: pageNum,
+      totalPages: Math.ceil(total / limitNum),
+    };
+  }
 }
 
 module.exports = new UserService();
