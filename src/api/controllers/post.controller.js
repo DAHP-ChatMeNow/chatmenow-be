@@ -22,8 +22,7 @@ exports.getNewsFeed = async (req, res) => {
 exports.createPost = async (req, res) => {
   try {
     const userId = req.user.userId;
-    const files = req.files || []; // Files từ multer middleware
-
+    const files = req.files || [];
     const populatedPost = await postService.createPost(userId, req.body, files);
 
     res.status(201).json(populatedPost);
