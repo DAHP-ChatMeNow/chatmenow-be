@@ -1,5 +1,31 @@
 const videoCallService = require("../service/video-call.service");
 
+function emitCallHistoryMessage(io, result) {
+  const historyMessage = result?.historyMessage;
+  if (!historyMessage) {
+    return;
+  }
+
+  const conversationId = historyMessage.conversationId?.toString();
+  const callerId = result?.call?.callerId?._id?.toString();
+  const receiverId = result?.call?.receiverId?._id?.toString();
+
+  if (conversationId) {
+    io.to(conversationId).emit("newMessage", historyMessage);
+    io.to(conversationId).emit("message:new", historyMessage);
+  }
+
+  if (callerId) {
+    io.to(callerId).emit("newMessage", historyMessage);
+    io.to(callerId).emit("message:new", historyMessage);
+  }
+
+  if (receiverId) {
+    io.to(receiverId).emit("newMessage", historyMessage);
+    io.to(receiverId).emit("message:new", historyMessage);
+  }
+}
+
 const VideoCallController = {
   /**
    * Initiate a video call
@@ -78,6 +104,8 @@ const VideoCallController = {
         reason,
       );
 
+      emitCallHistoryMessage(req.app.get("io"), result);
+
       return res.status(200).json(result);
     } catch (error) {
       console.error("Error rejecting call:", error);
@@ -95,8 +123,11 @@ const VideoCallController = {
   async endCall(req, res) {
     try {
       const { callId } = req.params;
+      const endedByUserId = req.user.userId;
 
-      const result = await videoCallService.endCall(callId);
+      const result = await videoCallService.endCall(callId, endedByUserId);
+
+      emitCallHistoryMessage(req.app.get("io"), result);
 
       return res.status(200).json(result);
     } catch (error) {

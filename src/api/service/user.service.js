@@ -4,6 +4,7 @@ const Notification = require("../models/notification.model");
 const Account = require("../models/account.model");
 const Conversation = require("../models/conversation.model");
 const Message = require("../models/message.model");
+const { formatLastSeen } = require("../../utils/last-seen.helper");
 const {
   CONVERSATION_TYPES,
   FRIEND_REQUEST_STATUS,
@@ -107,9 +108,69 @@ class UserService {
       bio: user.bio,
       isOnline: user.isOnline,
       lastSeen: user.lastSeen,
+      lastSeenText: formatLastSeen(user.lastSeen, user.isOnline),
       coverImage: user.coverImage,
       friends: user.friends,
       createdAt: user.createdAt,
+    };
+  }
+
+  async getFriendProfile(viewerId, targetUserId) {
+    if (!targetUserId) {
+      throw {
+        statusCode: 400,
+        message: "User ID không hợp lệ",
+      };
+    }
+
+    const [viewer, targetUser] = await Promise.all([
+      User.findById(viewerId).select("friends"),
+      User.findById(targetUserId)
+        .populate("friends", "_id")
+        .select(
+          "displayName avatar bio coverImage isOnline lastSeen friends createdAt",
+        ),
+    ]);
+
+    if (!viewer) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng hiện tại",
+      };
+    }
+
+    if (!targetUser) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    const viewerFriendIds = new Set(
+      (viewer.friends || []).map((id) => id.toString()),
+    );
+    const targetFriendIds = (targetUser.friends || []).map((friend) =>
+      friend._id.toString(),
+    );
+
+    const isFriend = viewerFriendIds.has(targetUser._id.toString());
+    const mutualFriendsCount = targetFriendIds.filter((friendId) =>
+      viewerFriendIds.has(friendId),
+    ).length;
+
+    return {
+      _id: targetUser._id,
+      displayName: targetUser.displayName,
+      avatar: targetUser.avatar,
+      bio: targetUser.bio,
+      coverImage: targetUser.coverImage,
+      isOnline: targetUser.isOnline,
+      lastSeen: targetUser.lastSeen,
+      lastSeenText: formatLastSeen(targetUser.lastSeen, targetUser.isOnline),
+      friendsCount: targetFriendIds.length,
+      isFriend,
+      mutualFriendsCount,
+      createdAt: targetUser.createdAt,
     };
   }
 
@@ -241,7 +302,15 @@ class UserService {
     }
 
     return {
-      friends: user.friends,
+      friends: user.friends.map((friend) => ({
+        _id: friend._id,
+        displayName: friend.displayName,
+        avatar: friend.avatar,
+        bio: friend.bio,
+        isOnline: friend.isOnline,
+        lastSeen: friend.lastSeen,
+        lastSeenText: formatLastSeen(friend.lastSeen, friend.isOnline),
+      })),
       total: user.friends.length,
     };
   }
@@ -827,6 +896,7 @@ class UserService {
         bio: user.bio,
         isOnline: user.isOnline,
         lastSeen: user.lastSeen,
+        lastSeenText: formatLastSeen(user.lastSeen, user.isOnline),
         email: user.accountId?.email || "",
         phoneNumber: user.accountId?.phoneNumber || "",
         role: user.accountId?.role || "user",

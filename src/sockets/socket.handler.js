@@ -9,6 +9,9 @@ const { SOCKET_EVENTS } = require("../constants/video-call.constants");
 
 // Store active calls: { callId: { callerId, receiverId, callerSocket, receiverSocket } }
 const activeCallsMap = new Map();
+// Presence tracking to support multiple devices/tabs per user.
+const userSocketsMap = new Map(); // userId -> Set<socketId>
+const socketUserMap = new Map(); // socketId -> userId
 
 // ==================== HELPER FUNCTIONS ====================
 
@@ -65,8 +68,46 @@ function createSignalingPayload(basePayload) {
 
 function initializeSocket(io) {
   io.on("connection", (socket) => {
-    socket.on("setup", (userId) => {
-      socket.join(userId);
+    socket.on("setup", async (userId) => {
+      if (!userId) {
+        socket.emit("error", { message: "Missing userId in setup" });
+        return;
+      }
+
+      const normalizedUserId = userId.toString();
+      const previousUserId = socketUserMap.get(socket.id);
+
+      // Clean previous relation when client calls setup again on same socket.
+      if (previousUserId && previousUserId !== normalizedUserId) {
+        const previousSockets = userSocketsMap.get(previousUserId);
+        if (previousSockets) {
+          previousSockets.delete(socket.id);
+          if (previousSockets.size === 0) {
+            userSocketsMap.delete(previousUserId);
+          }
+        }
+      }
+
+      const userSockets = userSocketsMap.get(normalizedUserId) || new Set();
+      const wasOffline = userSockets.size === 0;
+      userSockets.add(socket.id);
+      userSocketsMap.set(normalizedUserId, userSockets);
+      socketUserMap.set(socket.id, normalizedUserId);
+
+      socket.join(normalizedUserId);
+
+      if (wasOffline) {
+        await User.findByIdAndUpdate(normalizedUserId, {
+          isOnline: true,
+        });
+
+        io.emit("user:presence", {
+          userId: normalizedUserId,
+          isOnline: true,
+          lastSeen: null,
+        });
+      }
+
       socket.emit("connected");
     });
 
@@ -506,12 +547,54 @@ function initializeSocket(io) {
      * Emitted by: Either party
      * Flow: A/B -> Server -> B/A
      */
-    socket.on(SOCKET_EVENTS.END_CALL, (data) => {
+    socket.on(SOCKET_EVENTS.END_CALL, async (data) => {
       try {
         const callId = normalizeCallId(data);
         if (!callId) {
           socket.emit("error", { message: "Invalid callId" });
           return;
+        }
+
+        const endedByUserId =
+          socketUserMap.get(socket.id) ||
+          data.endedByUserId ||
+          data.userId ||
+          null;
+
+        let endCallResult = null;
+
+        // Persist call result even if FE does not invoke REST /end endpoint.
+        try {
+          endCallResult = await videoCallService.endCall(callId, endedByUserId);
+        } catch (persistError) {
+          console.error("[VIDEO CALL] Failed to persist ended call:", {
+            callId,
+            message: persistError?.message || "Unknown error",
+          });
+        }
+
+        const historyMessage = endCallResult?.historyMessage;
+        const historyConversationId =
+          historyMessage?.conversationId?.toString();
+        const historyCallerId = endCallResult?.call?.callerId?._id?.toString();
+        const historyReceiverId =
+          endCallResult?.call?.receiverId?._id?.toString();
+
+        if (historyMessage) {
+          if (historyConversationId) {
+            io.to(historyConversationId).emit("newMessage", historyMessage);
+            io.to(historyConversationId).emit("message:new", historyMessage);
+          }
+
+          if (historyCallerId) {
+            io.to(historyCallerId).emit("newMessage", historyMessage);
+            io.to(historyCallerId).emit("message:new", historyMessage);
+          }
+
+          if (historyReceiverId) {
+            io.to(historyReceiverId).emit("newMessage", historyMessage);
+            io.to(historyReceiverId).emit("message:new", historyMessage);
+          }
         }
 
         const callData = activeCallsMap.get(callId);
@@ -548,7 +631,33 @@ function initializeSocket(io) {
 
     // ==================== DISCONNECT ====================
 
-    socket.on("disconnect", () => {
+    socket.on("disconnect", async () => {
+      const disconnectedUserId = socketUserMap.get(socket.id);
+      socketUserMap.delete(socket.id);
+
+      if (disconnectedUserId) {
+        const sockets = userSocketsMap.get(disconnectedUserId);
+        if (sockets) {
+          sockets.delete(socket.id);
+
+          if (sockets.size === 0) {
+            userSocketsMap.delete(disconnectedUserId);
+            const now = new Date();
+
+            await User.findByIdAndUpdate(disconnectedUserId, {
+              isOnline: false,
+              lastSeen: now,
+            });
+
+            io.emit("user:presence", {
+              userId: disconnectedUserId,
+              isOnline: false,
+              lastSeen: now,
+            });
+          }
+        }
+      }
+
       // Clean up active calls for this socket
       for (const [callId, callData] of activeCallsMap.entries()) {
         if (
