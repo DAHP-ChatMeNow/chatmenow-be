@@ -1,5 +1,8 @@
 const mongoose = require("mongoose");
 const Schema = mongoose.Schema;
+const {
+  NOTIFICATION_TYPES,
+} = require("../../constants/notification.constants");
 
 const NotificationSchema = new Schema(
   {
@@ -8,7 +11,7 @@ const NotificationSchema = new Schema(
 
     type: {
       type: String,
-      enum: ["friend_request", "like_post", "comment", "system"],
+      enum: Object.values(NOTIFICATION_TYPES),
       required: true,
     },
     referenced: { type: Schema.Types.ObjectId },
