@@ -32,6 +32,9 @@ exports.getMessages = async (req, res) => {
       success: true,
       messages: result.messages,
       total: result.total,
+      limit: result.limit,
+      hasMore: result.hasMore,
+      nextCursor: result.nextCursor,
     });
   } catch (error) {
     if (error.statusCode) {
