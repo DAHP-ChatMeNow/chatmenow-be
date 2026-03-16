@@ -5,6 +5,7 @@ const NOTIFICATION_TYPES = {
   POST_COMMENT: "post_comment",
   SYSTEM: "system",
   GROUP_INVITE: "group_invite",
+  VIDEO_CALL: "video_call",
 };
 
 module.exports = {
