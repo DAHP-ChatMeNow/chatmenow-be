@@ -7,6 +7,7 @@ const {
   MESSAGE_TYPES,
   MEMBER_ROLES,
 } = require("../../constants");
+const { formatLastSeen } = require("../../utils/last-seen.helper");
 
 class ChatService {
   /**
@@ -17,7 +18,7 @@ class ChatService {
       "members.userId": userId,
     })
       .sort({ updatedAt: -1 })
-      .populate("members.userId", "displayName avatar isOnline")
+      .populate("members.userId", "displayName avatar isOnline lastSeen")
       .populate("lastMessage.senderId", "displayName avatar");
 
     return conversations;
@@ -27,25 +28,43 @@ class ChatService {
    * Lấy tin nhắn trong conversation
    */
   async getMessages(conversationId, { limit = 20, beforeId }) {
+    const parsedLimit = parseInt(limit, 10);
+    const safeLimit = Number.isFinite(parsedLimit)
+      ? Math.min(Math.max(parsedLimit, 1), 100)
+      : 20;
+
     const query = { conversationId };
 
     if (beforeId) {
-      const referenceMsg = await Message.findById(beforeId);
+      const referenceMsg =
+        await Message.findById(beforeId).select("_id createdAt");
       if (referenceMsg) {
-        query.createdAt = { $lt: referenceMsg.createdAt };
+        query.$or = [
+          { createdAt: { $lt: referenceMsg.createdAt } },
+          {
+            createdAt: referenceMsg.createdAt,
+            _id: { $lt: referenceMsg._id },
+          },
+        ];
       }
     }
 
     const messages = await Message.find(query)
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(safeLimit + 1)
       .populate("senderId", "displayName avatar");
 
-    const ordered = messages.reverse();
+    const hasMore = messages.length > safeLimit;
+    const pagedMessages = hasMore ? messages.slice(0, safeLimit) : messages;
+    const ordered = pagedMessages.reverse();
+    const nextCursor = hasMore && ordered.length ? ordered[0]._id : null;
 
     return {
       messages: ordered,
       total: ordered.length,
+      limit: safeLimit,
+      hasMore,
+      nextCursor,
     };
   }
 
@@ -196,6 +215,7 @@ class ChatService {
       avatar: partner.avatar,
       isOnline: partner.isOnline,
       lastSeen: partner.lastSeen,
+      lastSeenText: formatLastSeen(partner.lastSeen, partner.isOnline),
     };
   }
 

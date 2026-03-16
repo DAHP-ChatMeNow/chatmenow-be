@@ -20,6 +20,13 @@ router.get("/profile", verifyToken, (req, res) => {
   return userController.getUserProfile(req, res);
 });
 
+// Lấy profile người khác (dùng cho màn hình chat bấm vào bạn bè)
+router.get(
+  "/friends/:userId/profile",
+  verifyToken,
+  userController.getFriendProfile,
+);
+
 router.put("/profile", verifyToken, userController.updateProfile);
 
 router.put("/avatar", verifyToken, userController.updateAvatar);

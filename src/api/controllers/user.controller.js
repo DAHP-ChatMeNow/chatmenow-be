@@ -36,6 +36,25 @@ exports.getUserProfile = async (req, res) => {
   }
 };
 
+exports.getFriendProfile = async (req, res) => {
+  try {
+    const viewerId = req.user.userId;
+    const targetUserId = req.params.userId;
+
+    const user = await userService.getFriendProfile(viewerId, targetUserId);
+
+    res.status(200).json({
+      success: true,
+      user,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.updateProfile = async (req, res) => {
   try {
     const updatedUser = await userService.updateProfile(
