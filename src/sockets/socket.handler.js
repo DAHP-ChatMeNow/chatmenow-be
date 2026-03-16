@@ -111,23 +111,26 @@ function initializeSocket(io) {
 
         io.to(conversationId).emit("newMessage", savedMessage);
 
-        const newNoti = await Notification.create({
+        await Notification.create({
           recipientId: receiverId,
           senderId: senderId,
           type: "message",
-          referenceId: conversationId,
+          referenced: conversationId,
           message: `đã gửi tin nhắn: ${text.substring(0, 30)}...`,
           isRead: false,
         });
 
-        io.to(receiverId).emit("notification", {
+        const notificationPayload = {
           type: "message",
           senderName: sender.displayName,
           senderAvatar: sender.avatar,
           content: text,
           conversationId: conversationId,
           createdAt: new Date(),
-        });
+        };
+
+        io.to(receiverId).emit("notification", notificationPayload);
+        io.to(receiverId).emit("notification:new", notificationPayload);
       } catch (error) {
         socket.emit("error", { message: "Lỗi khi gửi tin nhắn" });
       }
@@ -344,6 +347,14 @@ function initializeSocket(io) {
           return;
         }
 
+        if (!callData.receiverSocket) {
+          console.warn(
+            `[SIGNALING] Offer dropped – receiver not yet connected for call ${callId}`,
+          );
+          socket.emit("error", { message: "Receiver not connected yet" });
+          return;
+        }
+
         // Forward offer to receiver with standardized payload
         const offerPayload = createSignalingPayload({
           callId,
@@ -357,7 +368,9 @@ function initializeSocket(io) {
           offerPayload,
         );
 
-        console.log(`[SIGNALING] Offer sent for call ${callId}`);
+        console.log(
+          `[SIGNALING] Offer sent: caller(${callData.callerSocket}) -> receiver(${callData.receiverSocket}) (call ${callId})`,
+        );
       } catch (error) {
         console.error("Error sending offer:", error);
         socket.emit("error", { message: "Failed to send offer" });
@@ -403,7 +416,9 @@ function initializeSocket(io) {
           answerPayload,
         );
 
-        console.log(`[SIGNALING] Answer sent for call ${callId}`);
+        console.log(
+          `[SIGNALING] Answer sent: receiver(${callData.receiverSocket}) -> caller(${callData.callerSocket}) (call ${callId})`,
+        );
       } catch (error) {
         console.error("Error sending answer:", error);
         socket.emit("error", { message: "Failed to send answer" });
@@ -415,6 +430,10 @@ function initializeSocket(io) {
      * Emitted by: Both parties (continuously during call setup)
      * Flow: A <-> Server <-> B
      * ICE candidates are used for network connectivity
+     *
+     * Routing strategy: use socket.id (server-known) as primary source of truth.
+     * "from" field sent by FE is used as fallback only – avoids broken routing
+     * when FE omits the field or sends wrong value.
      */
     socket.on(SOCKET_EVENTS.ICE_CANDIDATE, (data) => {
       try {
@@ -436,20 +455,41 @@ function initializeSocket(io) {
           return;
         }
 
-        // Determine target socket
-        const targetSocket =
-          from === "caller" ? callData.receiverSocket : callData.callerSocket;
+        // Determine sender role using socket.id (reliable, server-side).
+        // Fall back to the "from" field sent by FE for backward compatibility.
+        let senderRole;
+        if (socket.id === callData.callerSocket) {
+          senderRole = "caller";
+        } else if (socket.id === callData.receiverSocket) {
+          senderRole = "receiver";
+        } else {
+          // Socket reconnected or unknown – trust the FE-provided "from".
+          senderRole = from === "caller" ? "caller" : "receiver";
+        }
 
-        // Forward ICE candidate with standardized payload
+        const targetSocket =
+          senderRole === "caller"
+            ? callData.receiverSocket
+            : callData.callerSocket;
+
+        if (!targetSocket) {
+          // Other party not yet connected – silently discard
+          return;
+        }
+
+        // Include the authoritative senderRole so the FE receiving end
+        // always knows who sent this candidate.
         const candidatePayload = createSignalingPayload({
           callId,
           candidate,
-          from,
+          from: senderRole,
         });
 
         io.to(targetSocket).emit(SOCKET_EVENTS.ICE_CANDIDATE, candidatePayload);
 
-        console.log(`[SIGNALING] ICE candidate sent for call ${callId}`);
+        console.log(
+          `[SIGNALING] ICE candidate routed: ${senderRole} -> other side (call ${callId})`,
+        );
       } catch (error) {
         console.error("Error sending ICE candidate:", error);
         socket.emit("error", { message: "Failed to send ICE candidate" });
