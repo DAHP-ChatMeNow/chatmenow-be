@@ -1,0 +1,32 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chatmenow-backend
+    env_file:
+      - .env
+    environment:
+      PORT: ${PORT:-5000}
+      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+    depends_on:
+      - livekit
+    restart: unless-stopped
+    ports:
+      - "${PORT:-5000}:${PORT:-5000}"
+
+  livekit:
+    image: livekit/livekit-server:v1.8.4
+    container_name: chatmenow-livekit
+    command: --config /etc/livekit.yaml
+    restart: unless-stopped
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}:${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880/tcp"
+      - "7881:7881/tcp"
+      - "50000-50100:50000-50100/udp"
