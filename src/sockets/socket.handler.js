@@ -7,6 +7,72 @@ const Notification = require("../api/models/notification.model");
 const userSocketsMap = new Map(); // userId -> Set<socketId>
 const socketUserMap = new Map(); // socketId -> userId
 
+async function persistCallHistoryMessage(io, payload) {
+  const {
+    conversationId,
+    senderId,
+    status,
+    callType = "video",
+    duration = 0,
+    startedAt = null,
+    endedAt = null,
+  } = payload || {};
+
+  if (!conversationId || !senderId || !status) {
+    return null;
+  }
+
+  const safeCallType = callType === "audio" ? "audio" : "video";
+  const safeDuration = Number.isFinite(Number(duration))
+    ? Math.max(0, Math.floor(Number(duration)))
+    : 0;
+
+  let historyMessage = await Message.create({
+    conversationId,
+    senderId,
+    content: status,
+    type: "system",
+    callInfo: {
+      callType: safeCallType,
+      status,
+      duration: safeDuration,
+      startedAt,
+      endedAt,
+    },
+  });
+
+  historyMessage = await historyMessage.populate("senderId", "displayName avatar");
+
+  await Conversation.findByIdAndUpdate(conversationId, {
+    lastMessage: {
+      content: status,
+      senderId,
+      senderName: "Hệ thống",
+      type: "system",
+      createdAt: historyMessage.createdAt,
+    },
+    updatedAt: new Date(),
+  });
+
+  io.to(conversationId.toString()).emit("newMessage", historyMessage);
+  io.to(conversationId.toString()).emit("message:new", historyMessage);
+
+  const conversation = await Conversation.findById(conversationId)
+    .select("members.userId")
+    .lean();
+
+  const memberIds = (conversation?.members || [])
+    .map((member) => member.userId?.toString())
+    .filter(Boolean);
+
+  for (const memberId of memberIds) {
+    io.to(memberId).emit("newMessage", historyMessage);
+    io.to(memberId).emit("message:new", historyMessage);
+  }
+
+  return historyMessage;
+}
+
 function initializeSocket(io) {
   const emitToUser = (userId, eventName, payload) => {
     if (!userId) return;
@@ -152,53 +218,124 @@ function initializeSocket(io) {
       });
     });
 
-    socket.on("accept-call", (data = {}) => {
-      const fromUserId = socket.data.userId || data.fromUserId;
-      const { toUserId, roomId, conversationId, callType = "video" } = data;
+    socket.on("accept-call", async (data = {}) => {
+      try {
+        const fromUserId = socket.data.userId || data.fromUserId;
+        const { toUserId, roomId, conversationId, callType = "video" } = data;
 
-      if (!fromUserId || !toUserId || !roomId) {
-        socket.emit("call-error", {
-          message: "Thiếu dữ liệu accept-call (fromUserId, toUserId, roomId)",
+        if (!fromUserId || !toUserId || !roomId) {
+          socket.emit("call-error", {
+            message: "Thiếu dữ liệu accept-call (fromUserId, toUserId, roomId)",
+          });
+          return;
+        }
+
+        const acceptedAt = new Date();
+
+        emitToUser(toUserId, "call-accepted", {
+          fromUserId: String(fromUserId),
+          toUserId: String(toUserId),
+          roomId,
+          conversationId,
+          callType,
+          acceptedAt: acceptedAt.toISOString(),
         });
-        return;
-      }
 
-      emitToUser(toUserId, "call-accepted", {
-        fromUserId: String(fromUserId),
-        toUserId: String(toUserId),
-        roomId,
-        conversationId,
-        callType,
-        acceptedAt: new Date().toISOString(),
-      });
+        await persistCallHistoryMessage(io, {
+          conversationId,
+          senderId: fromUserId,
+          status: "accepted",
+          callType,
+          startedAt: acceptedAt,
+        });
+      } catch (error) {
+        socket.emit("call-error", { message: "Lỗi khi xử lý accept-call" });
+      }
     });
 
-    socket.on("reject-call", (data = {}) => {
-      const fromUserId = socket.data.userId || data.fromUserId;
-      const {
-        toUserId,
-        roomId,
-        conversationId,
-        callType = "video",
-        reason = "rejected",
-      } = data;
+    socket.on("reject-call", async (data = {}) => {
+      try {
+        const fromUserId = socket.data.userId || data.fromUserId;
+        const {
+          toUserId,
+          roomId,
+          conversationId,
+          callType = "video",
+          reason = "rejected",
+        } = data;
 
-      if (!fromUserId || !toUserId || !roomId) {
-        socket.emit("call-error", {
-          message: "Thiếu dữ liệu reject-call (fromUserId, toUserId, roomId)",
+        if (!fromUserId || !toUserId || !roomId) {
+          socket.emit("call-error", {
+            message: "Thiếu dữ liệu reject-call (fromUserId, toUserId, roomId)",
+          });
+          return;
+        }
+
+        const rejectedAt = new Date();
+
+        emitToUser(toUserId, "call-rejected", {
+          fromUserId: String(fromUserId),
+          toUserId: String(toUserId),
+          roomId,
+          conversationId,
+          callType,
+          reason,
+          rejectedAt: rejectedAt.toISOString(),
         });
-        return;
-      }
 
-      emitToUser(toUserId, "call-rejected", {
-        fromUserId: String(fromUserId),
-        toUserId: String(toUserId),
-        roomId,
-        conversationId,
-        callType,
-        reason,
-        rejectedAt: new Date().toISOString(),
-      });
+        await persistCallHistoryMessage(io, {
+          conversationId,
+          senderId: fromUserId,
+          status: "rejected",
+          callType,
+          endedAt: rejectedAt,
+        });
+      } catch (error) {
+        socket.emit("call-error", { message: "Lỗi khi xử lý reject-call" });
+      }
+    });
+
+    socket.on("end-call", async (data = {}) => {
+      try {
+        const fromUserId = socket.data.userId || data.fromUserId;
+        const {
+          toUserId,
+          roomId,
+          conversationId,
+          callType = "video",
+          duration = 0,
+        } = data;
+
+        if (!fromUserId || !toUserId || !roomId) {
+          socket.emit("call-error", {
+            message: "Thiếu dữ liệu end-call (fromUserId, toUserId, roomId)",
+          });
+          return;
+        }
+
+        const endedAt = new Date();
+
+        emitToUser(toUserId, "call-ended", {
+          fromUserId: String(fromUserId),
+          toUserId: String(toUserId),
+          roomId,
+          conversationId,
+          callType,
+          duration,
+          endedAt: endedAt.toISOString(),
+        });
+
+        await persistCallHistoryMessage(io, {
+          conversationId,
+          senderId: fromUserId,
+          status: "ended",
+          callType,
+          duration,
+          endedAt,
+        });
+      } catch (error) {
+        socket.emit("call-error", { message: "Lỗi khi xử lý end-call" });
+      }
     });
 
     socket.on("disconnect", async () => {
