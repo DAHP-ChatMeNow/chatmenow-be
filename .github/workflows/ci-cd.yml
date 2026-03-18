@@ -116,13 +116,55 @@ jobs:
               echo "Warning: LIVEKIT_URL is set to ws://localhost:7880 (usually invalid for remote clients)."
             fi
 
+            get_env_var() {
+              local key="$1"
+              grep -E "^${key}=" "$ENV_FILE" | tail -n 1 | cut -d '=' -f2-
+            }
+
+            PORT="$(get_env_var PORT)"
+            LIVEKIT_API_KEY_VALUE="$(get_env_var LIVEKIT_API_KEY)"
+            LIVEKIT_API_SECRET_VALUE="$(get_env_var LIVEKIT_API_SECRET)"
+
+            LIVEKIT_CONTAINER="$(get_env_var LIVEKIT_CONTAINER_NAME)"
+            LIVEKIT_CONTAINER="${LIVEKIT_CONTAINER:-chatmenow-livekit-dev}"
+
+            LIVEKIT_IMAGE="$(get_env_var LIVEKIT_IMAGE)"
+            LIVEKIT_IMAGE="${LIVEKIT_IMAGE:-livekit/livekit-server:v1.8.4}"
+
+            LIVEKIT_CONFIG_PATH="$(get_env_var LIVEKIT_CONFIG_PATH)"
+            LIVEKIT_CONFIG_PATH="${LIVEKIT_CONFIG_PATH:-$HOME/chatmenow-dev/livekit.yaml}"
+
+            LIVEKIT_WS_PORT="$(get_env_var LIVEKIT_WS_PORT)"
+            LIVEKIT_WS_PORT="${LIVEKIT_WS_PORT:-7880}"
+
+            LIVEKIT_TCP_PORT="$(get_env_var LIVEKIT_TCP_PORT)"
+            LIVEKIT_TCP_PORT="${LIVEKIT_TCP_PORT:-7881}"
+
+            LIVEKIT_UDP_PORT_RANGE="$(get_env_var LIVEKIT_UDP_PORT_RANGE)"
+            LIVEKIT_UDP_PORT_RANGE="${LIVEKIT_UDP_PORT_RANGE:-50000-50100}"
+
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
+            if [[ ! -f "$LIVEKIT_CONFIG_PATH" ]]; then
+              echo "Missing LiveKit config file: $LIVEKIT_CONFIG_PATH"
+              exit 1
+            fi
+
+            docker pull "$LIVEKIT_IMAGE"
             docker pull $IMAGE
 
-            docker rm -f $CONTAINER || true
+            docker rm -f "$LIVEKIT_CONTAINER" || true
+            docker run -d \
+              --name "$LIVEKIT_CONTAINER" \
+              --restart unless-stopped \
+              -e LIVEKIT_KEYS="${LIVEKIT_API_KEY_VALUE}:${LIVEKIT_API_SECRET_VALUE}" \
+              -v "$LIVEKIT_CONFIG_PATH:/etc/livekit.yaml:ro" \
+              -p "${LIVEKIT_WS_PORT}:7880/tcp" \
+              -p "${LIVEKIT_TCP_PORT}:7881/tcp" \
+              -p "${LIVEKIT_UDP_PORT_RANGE}:${LIVEKIT_UDP_PORT_RANGE}/udp" \
+              "$LIVEKIT_IMAGE" --config /etc/livekit.yaml
 
-            PORT=$(grep '^PORT=' $ENV_FILE | cut -d '=' -f2)
+            docker rm -f $CONTAINER || true
 
             docker run -d \
               --name $CONTAINER \
@@ -170,13 +212,55 @@ jobs:
               echo "Warning: LIVEKIT_URL is set to ws://localhost:7880 (usually invalid for remote clients)."
             fi
 
+            get_env_var() {
+              local key="$1"
+              grep -E "^${key}=" "$ENV_FILE" | tail -n 1 | cut -d '=' -f2-
+            }
+
+            PORT="$(get_env_var PORT)"
+            LIVEKIT_API_KEY_VALUE="$(get_env_var LIVEKIT_API_KEY)"
+            LIVEKIT_API_SECRET_VALUE="$(get_env_var LIVEKIT_API_SECRET)"
+
+            LIVEKIT_CONTAINER="$(get_env_var LIVEKIT_CONTAINER_NAME)"
+            LIVEKIT_CONTAINER="${LIVEKIT_CONTAINER:-chatmenow-livekit-prod}"
+
+            LIVEKIT_IMAGE="$(get_env_var LIVEKIT_IMAGE)"
+            LIVEKIT_IMAGE="${LIVEKIT_IMAGE:-livekit/livekit-server:v1.8.4}"
+
+            LIVEKIT_CONFIG_PATH="$(get_env_var LIVEKIT_CONFIG_PATH)"
+            LIVEKIT_CONFIG_PATH="${LIVEKIT_CONFIG_PATH:-$HOME/chatmenow-prod/livekit.yaml}"
+
+            LIVEKIT_WS_PORT="$(get_env_var LIVEKIT_WS_PORT)"
+            LIVEKIT_WS_PORT="${LIVEKIT_WS_PORT:-7980}"
+
+            LIVEKIT_TCP_PORT="$(get_env_var LIVEKIT_TCP_PORT)"
+            LIVEKIT_TCP_PORT="${LIVEKIT_TCP_PORT:-7981}"
+
+            LIVEKIT_UDP_PORT_RANGE="$(get_env_var LIVEKIT_UDP_PORT_RANGE)"
+            LIVEKIT_UDP_PORT_RANGE="${LIVEKIT_UDP_PORT_RANGE:-51000-51100}"
+
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
+            if [[ ! -f "$LIVEKIT_CONFIG_PATH" ]]; then
+              echo "Missing LiveKit config file: $LIVEKIT_CONFIG_PATH"
+              exit 1
+            fi
+
+            docker pull "$LIVEKIT_IMAGE"
             docker pull $IMAGE
 
-            docker rm -f $CONTAINER || true
+            docker rm -f "$LIVEKIT_CONTAINER" || true
+            docker run -d \
+              --name "$LIVEKIT_CONTAINER" \
+              --restart unless-stopped \
+              -e LIVEKIT_KEYS="${LIVEKIT_API_KEY_VALUE}:${LIVEKIT_API_SECRET_VALUE}" \
+              -v "$LIVEKIT_CONFIG_PATH:/etc/livekit.yaml:ro" \
+              -p "${LIVEKIT_WS_PORT}:7880/tcp" \
+              -p "${LIVEKIT_TCP_PORT}:7881/tcp" \
+              -p "${LIVEKIT_UDP_PORT_RANGE}:${LIVEKIT_UDP_PORT_RANGE}/udp" \
+              "$LIVEKIT_IMAGE" --config /etc/livekit.yaml
 
-            PORT=$(grep '^PORT=' $ENV_FILE | cut -d '=' -f2)
+            docker rm -f $CONTAINER || true
 
             docker run -d \
               --name $CONTAINER \
