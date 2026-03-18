@@ -157,7 +157,7 @@ jobs:
             docker run -d \
               --name "$LIVEKIT_CONTAINER" \
               --restart unless-stopped \
-              -e LIVEKIT_KEYS="${LIVEKIT_API_KEY_VALUE}:${LIVEKIT_API_SECRET_VALUE}" \
+              -e LIVEKIT_KEYS="${LIVEKIT_API_KEY_VALUE}: ${LIVEKIT_API_SECRET_VALUE}" \
               -v "$LIVEKIT_CONFIG_PATH:/etc/livekit.yaml:ro" \
               -p "${LIVEKIT_WS_PORT}:7880/tcp" \
               -p "${LIVEKIT_TCP_PORT}:7881/tcp" \
@@ -253,7 +253,7 @@ jobs:
             docker run -d \
               --name "$LIVEKIT_CONTAINER" \
               --restart unless-stopped \
-              -e LIVEKIT_KEYS="${LIVEKIT_API_KEY_VALUE}:${LIVEKIT_API_SECRET_VALUE}" \
+              -e LIVEKIT_KEYS="${LIVEKIT_API_KEY_VALUE}: ${LIVEKIT_API_SECRET_VALUE}" \
               -v "$LIVEKIT_CONFIG_PATH:/etc/livekit.yaml:ro" \
               -p "${LIVEKIT_WS_PORT}:7880/tcp" \
               -p "${LIVEKIT_TCP_PORT}:7881/tcp" \
