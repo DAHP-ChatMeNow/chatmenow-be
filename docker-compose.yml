@@ -8,7 +8,7 @@ services:
       - .env
     environment:
       PORT: ${PORT:-5000}
-      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_URL: ${LIVEKIT_URL:-ws://livekit:7880}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
     depends_on:
@@ -18,12 +18,12 @@ services:
       - "${PORT:-5000}:${PORT:-5000}"
 
   livekit:
-    image: livekit/livekit-server:v1.8.4
+    image: ${LIVEKIT_IMAGE:-livekit/livekit-server:latest}
     container_name: chatmenow-livekit
     command: --config /etc/livekit.yaml
     restart: unless-stopped
     environment:
-      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}:${LIVEKIT_API_SECRET}"
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
     ports:
