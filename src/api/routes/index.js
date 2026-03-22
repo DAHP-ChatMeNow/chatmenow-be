@@ -8,13 +8,16 @@ const chatRoute = require("./chat.route");
 const notiRoute = require("./notification.route");
 const uploadRoute = require("./upload.route");
 const livekitRoute = require("./livekit.route");
+const reelRoute = require("./reel.route"); 
 
 router.use("/auth", authRoute);
 router.use("/users", userRoute);
 router.use("/posts", postRoute);
 router.use("/chat", chatRoute);
-router.use("/notifications", notiRoute);
+router.use("/notifications", notiRoute); 
 router.use("/upload", uploadRoute);
 router.use("/", livekitRoute);
+router.use("/reels", reelRoute); 
+
 
 module.exports = router;
