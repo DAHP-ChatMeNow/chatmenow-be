@@ -8,6 +8,7 @@ const { MESSAGE_TYPES } = require("./message.constants");
 const { NOTIFICATION_TYPES } = require("./notification.constants");
 const { TRANSACTION_STATUS } = require("./transaction.constants");
 const { USER_ROLES } = require("./user.constants");
+const { STORY_PRIVACY, STORY_SETTINGS } = require("./story.constants");
 
 module.exports = {
   CONVERSATION_TYPES,
@@ -18,4 +19,6 @@ module.exports = {
   NOTIFICATION_TYPES,
   TRANSACTION_STATUS,
   USER_ROLES,
+  STORY_PRIVACY,
+  STORY_SETTINGS,
 };
