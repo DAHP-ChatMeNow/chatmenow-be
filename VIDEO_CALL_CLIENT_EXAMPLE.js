@@ -102,10 +102,6 @@ class VideoCallClient {
         receiverId: receiverId,
         callType: callType,
       });
-
-      console.log(
-        `[VIDEO CALL] Call initiated to ${receiverId}, callId: ${call._id}`,
-      );
     } catch (error) {
       console.error("[VIDEO CALL] Error initiating call:", error);
       throw error;
@@ -206,8 +202,6 @@ class VideoCallClient {
         callId: callId,
         reason: reason,
       });
-
-      console.log(`[VIDEO CALL] Call rejected, reason: ${reason}`);
     } catch (error) {
       console.error("[VIDEO CALL] Error rejecting call:", error);
     }
@@ -424,7 +418,6 @@ class VideoCallClient {
    */
   onCallEnded(data) {
     const { callId, reason } = data;
-    console.log("[VIDEO CALL] Remote party ended call");
 
     // Cleanup
     this.cleanup();
