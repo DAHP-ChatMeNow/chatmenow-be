@@ -1,6 +1,5 @@
 const chatService = require("../service/chat.service");
 const Conversation = require("../models/conversation.model");
-const Notification = require("../models/notification.model");
 
 exports.getConversations = async (req, res) => {
   try {
@@ -54,10 +53,6 @@ exports.sendMessage = async (req, res) => {
       .select("members.userId")
       .lean();
 
-    const senderName =
-      message.senderId?.displayName || req.user.displayName || "Người dùng";
-    const senderAvatar = message.senderId?.avatar || null;
-
     // Keep old and new event names for FE compatibility.
     io.to(message.conversationId.toString()).emit("newMessage", message);
     io.to(message.conversationId.toString()).emit("message:new", message);
@@ -69,31 +64,6 @@ exports.sendMessage = async (req, res) => {
     for (const memberId of memberIds) {
       io.to(memberId).emit("newMessage", message);
       io.to(memberId).emit("message:new", message);
-
-      if (memberId === senderId.toString()) {
-        continue;
-      }
-
-      await Notification.create({
-        recipientId: memberId,
-        senderId,
-        type: "message",
-        referenced: message.conversationId,
-        message: `đã gửi tin nhắn: ${(message.content || "").substring(0, 30)}...`,
-        isRead: false,
-      });
-
-      const notificationPayload = {
-        type: "message",
-        senderName,
-        senderAvatar,
-        content: message.content,
-        conversationId: message.conversationId,
-        createdAt: new Date(),
-      };
-
-      io.to(memberId).emit("notification", notificationPayload);
-      io.to(memberId).emit("notification:new", notificationPayload);
     }
 
     res.status(201).json(message);

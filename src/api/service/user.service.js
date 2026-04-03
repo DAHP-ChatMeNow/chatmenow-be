@@ -6,11 +6,26 @@ const Conversation = require("../models/conversation.model");
 const Message = require("../models/message.model");
 const { formatLastSeen } = require("../../utils/last-seen.helper");
 const {
+  emitNotificationToUser,
+} = require("../../utils/realtime-notification.helper");
+const {
   CONVERSATION_TYPES,
   FRIEND_REQUEST_STATUS,
 } = require("../../constants");
 
 class UserService {
+  buildFriendRequestNotificationPayload(notification, sender, targetUrl) {
+    return {
+      ...notification.toObject(),
+      senderName: sender?.displayName || null,
+      senderAvatar: sender?.avatar || null,
+      displayText: `${sender?.displayName || "Ai đó"} đã gửi cho bạn lời mời kết bạn.`,
+      previewImage: sender?.avatar || null,
+      targetUrl,
+      isRead: false,
+    };
+  }
+
   async searchUsers(keyword, currentUserId) {
     if (!keyword) {
       throw {
@@ -382,13 +397,22 @@ class UserService {
         await existingRequest.save();
 
         // Tạo thông báo
-        await Notification.create({
+        const notification = await Notification.create({
           recipientId: receiverId,
           senderId: senderId,
           type: "friend_request",
           referenced: existingRequest._id,
           message: "đã gửi cho bạn lời mời kết bạn.",
         });
+
+        emitNotificationToUser(
+          receiverId,
+          this.buildFriendRequestNotificationPayload(
+            notification,
+            sender,
+            `/friends/requests/${existingRequest._id}`,
+          ),
+        );
 
         return existingRequest;
       }
@@ -398,13 +422,22 @@ class UserService {
     const newRequest = await FriendRequest.create({ senderId, receiverId });
 
     // Tạo thông báo
-    await Notification.create({
+    const notification = await Notification.create({
       recipientId: receiverId,
       senderId: senderId,
       type: "friend_request",
       referenced: newRequest._id,
       message: "đã gửi cho bạn lời mời kết bạn.",
     });
+
+    emitNotificationToUser(
+      receiverId,
+      this.buildFriendRequestNotificationPayload(
+        notification,
+        sender,
+        `/friends/requests/${newRequest._id}`,
+      ),
+    );
 
     return newRequest;
   }
@@ -556,13 +589,22 @@ class UserService {
         await existingRequest.save();
 
         // Tạo thông báo
-        await Notification.create({
+        const notification = await Notification.create({
           recipientId: receiverId,
           senderId: senderId,
           type: "friend_request",
           referenced: existingRequest._id,
           message: "đã gửi cho bạn lời mời kết bạn.",
         });
+
+        emitNotificationToUser(
+          receiverId,
+          this.buildFriendRequestNotificationPayload(
+            notification,
+            sender,
+            `/friends/requests/${existingRequest._id}`,
+          ),
+        );
 
         return {
           multiple: false,
@@ -582,13 +624,22 @@ class UserService {
     const newRequest = await FriendRequest.create({ senderId, receiverId });
 
     // Tạo thông báo
-    await Notification.create({
+    const notification = await Notification.create({
       recipientId: receiverId,
       senderId: senderId,
       type: "friend_request",
       referenced: newRequest._id,
       message: "đã gửi cho bạn lời mời kết bạn.",
     });
+
+    emitNotificationToUser(
+      receiverId,
+      this.buildFriendRequestNotificationPayload(
+        notification,
+        sender,
+        `/friends/requests/${newRequest._id}`,
+      ),
+    );
 
     return {
       multiple: false,
@@ -662,6 +713,19 @@ class UserService {
         }),
         conversationPromise,
       ]);
+
+      const senderUser =
+        await User.findById(userId).select("displayName avatar");
+      emitNotificationToUser(senderId, {
+        type: "system",
+        senderId: userId,
+        senderName: senderUser?.displayName || null,
+        senderAvatar: senderUser?.avatar || null,
+        displayText: `${senderUser?.displayName || "Ai đó"} đã chấp nhận lời mời kết bạn.`,
+        previewImage: senderUser?.avatar || null,
+        targetUrl: `/users/${userId}`,
+        isRead: false,
+      });
     }
 
     return { status };
@@ -726,6 +790,19 @@ class UserService {
         message: "đã chấp nhận lời mời kết bạn.",
       }),
     ]);
+
+    const receiverUser =
+      await User.findById(userId).select("displayName avatar");
+    emitNotificationToUser(senderId, {
+      type: "system",
+      senderId: userId,
+      senderName: receiverUser?.displayName || null,
+      senderAvatar: receiverUser?.avatar || null,
+      displayText: `${receiverUser?.displayName || "Ai đó"} đã chấp nhận lời mời kết bạn.`,
+      previewImage: receiverUser?.avatar || null,
+      targetUrl: `/users/${userId}`,
+      isRead: false,
+    });
 
     return {
       success: true,

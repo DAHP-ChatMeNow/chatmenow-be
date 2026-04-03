@@ -1,10 +1,20 @@
 const Post = require("../models/post.model");
 const Comment = require("../models/comment.model");
 const Notification = require("../models/notification.model");
+const User = require("../models/user.model");
 const { POST_PRIVACY } = require("../../constants");
 const { uploadToS3, getSignedUrlFromS3 } = require("../middleware/storage");
+const {
+  emitNotificationToUser,
+} = require("../../utils/realtime-notification.helper");
 
 class PostService {
+  hasUserLikedPost(post, userId) {
+    if (!post?.likes || post.likes.length === 0) return false;
+    const userIdString = userId.toString();
+    return post.likes.some((id) => id.toString() === userIdString);
+  }
+
   /**
    * Helper: Convert S3 keys trong media array thành presigned URLs
    */
@@ -51,7 +61,7 @@ class PostService {
       posts.map(async (post) => {
         const postObj = {
           ...post.toObject(),
-          isLikedByCurrentUser: post.likes && post.likes.includes(userId),
+          isLikedByCurrentUser: this.hasUserLikedPost(post, userId),
         };
         return await this.resolvePostMedia(postObj);
       }),
@@ -147,7 +157,7 @@ class PostService {
       posts.map(async (post) => {
         const postObj = {
           ...post.toObject(),
-          isLikedByCurrentUser: post.likes && post.likes.includes(userId),
+          isLikedByCurrentUser: this.hasUserLikedPost(post, userId),
         };
         return await this.resolvePostMedia(postObj);
       }),
@@ -175,7 +185,7 @@ class PostService {
   }
 
   /**
-   * Like bài viết
+   * Toggle like/bỏ like bài viết
    */
   async toggleLikePost(userId, postId) {
     const post = await Post.findById(postId);
@@ -186,12 +196,17 @@ class PostService {
       };
     }
 
-    const isLiked = post.likes && post.likes.includes(userId);
+    const isLiked = this.hasUserLikedPost(post, userId);
 
     if (isLiked) {
-      throw {
-        statusCode: 400,
-        message: "Bạn đã thích bài viết này rồi",
+      await Post.findByIdAndUpdate(postId, {
+        $pull: { likes: userId },
+        $set: { likesCount: Math.max((post.likesCount || 0) - 1, 0) },
+      });
+
+      return {
+        message: "Unliked",
+        isLikedByCurrentUser: false,
       };
     }
 
@@ -206,12 +221,27 @@ class PostService {
 
     // Tạo notification
     if (post.authorId.toString() !== userId) {
-      await Notification.create({
+      const actor = await User.findById(userId).select("displayName avatar");
+      const notification = await Notification.create({
         recipientId: post.authorId,
         senderId: userId,
-        type: "like_post",
+        type: "post_like",
         referenced: postId,
         message: "đã thích bài viết của bạn.",
+      });
+
+      emitNotificationToUser(post.authorId, {
+        ...notification.toObject(),
+        senderName: actor?.displayName || null,
+        senderAvatar: actor?.avatar || null,
+        displayText: `${actor?.displayName || "Ai đó"} đã thích bài viết của bạn.`,
+        previewImage:
+          post.media?.[0]?.url ||
+          post.authorId?.avatar ||
+          actor?.avatar ||
+          null,
+        targetUrl: `/posts/${postId}`,
+        isRead: false,
       });
     }
 
@@ -225,9 +255,30 @@ class PostService {
    * Unlike bài viết
    */
   async unlikePost(userId, postId) {
-    throw {
-      statusCode: 403,
-      message: "Bạn không thể bỏ like bài viết",
+    const post = await Post.findById(postId);
+    if (!post) {
+      throw {
+        statusCode: 404,
+        message: "Bài viết không tồn tại",
+      };
+    }
+
+    const isLiked = this.hasUserLikedPost(post, userId);
+    if (!isLiked) {
+      return {
+        message: "Post chưa được like",
+        isLikedByCurrentUser: false,
+      };
+    }
+
+    await Post.findByIdAndUpdate(postId, {
+      $pull: { likes: userId },
+      $set: { likesCount: Math.max((post.likesCount || 0) - 1, 0) },
+    });
+
+    return {
+      message: "Unliked",
+      isLikedByCurrentUser: false,
     };
   }
 
@@ -265,12 +316,27 @@ class PostService {
 
     // Tạo notification
     if (post && post.authorId.toString() !== userId) {
-      await Notification.create({
+      const actor = await User.findById(userId).select("displayName avatar");
+      const notification = await Notification.create({
         recipientId: post.authorId,
         senderId: userId,
-        type: "comment",
-        referenceId: postId,
+        type: "post_comment",
+        referenced: postId,
         message: "đã bình luận về bài viết của bạn.",
+      });
+
+      emitNotificationToUser(post.authorId, {
+        ...notification.toObject(),
+        senderName: actor?.displayName || null,
+        senderAvatar: actor?.avatar || null,
+        displayText: `${actor?.displayName || "Ai đó"} đã bình luận về bài viết của bạn.`,
+        previewImage:
+          post.media?.[0]?.url ||
+          post.authorId?.avatar ||
+          actor?.avatar ||
+          null,
+        targetUrl: `/posts/${postId}`,
+        isRead: false,
       });
     }
 

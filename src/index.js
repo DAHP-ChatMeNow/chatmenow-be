@@ -4,6 +4,7 @@ const { Server } = require("socket.io");
 const connectDB = require("./config/db");
 const routes = require("./api/routes/index");
 const initializeSocket = require("./sockets/socket.handler");
+const { setNotificationIo } = require("./utils/realtime-notification.helper");
 const { apiKeyMiddleware } = require("./api/middleware/apiKeyMiddleware");
 const cors = require("cors");
 const dotenv = require("dotenv");
@@ -17,14 +18,9 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 
 const corsOptions = {
   origin: (origin, callback) => {
-    console.log("👉 Incoming origin:", origin);
-    console.log("👉 Allowed origins:", allowedOrigins);
-
     if (!origin || allowedOrigins.includes(origin)) {
-      console.log("CORS OK:", origin);
       callback(null, true);
     } else {
-      console.error("CORS BLOCK:", origin);
       callback(new Error(`CORS: origin '${origin}' not allowed`));
     }
   },
@@ -44,6 +40,7 @@ const io = new Server(server, {
 });
 
 app.set("io", io);
+setNotificationIo(io);
 
 initializeSocket(io);
 

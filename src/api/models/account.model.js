@@ -11,6 +11,16 @@ const AccountSchema = new Schema(
     premiumExpiryDate: { type: Date, default: null },
     isActive: { type: Boolean, default: true },
 
+    rememberedLogins: [
+      {
+        sessionId: { type: String, required: true },
+        deviceId: { type: String, required: true },
+        deviceName: { type: String, default: "" },
+        createdAt: { type: Date, default: Date.now },
+        lastUsedAt: { type: Date, default: Date.now },
+      },
+    ],
+
     password: { type: String, required: true },
   },
   { timestamps: true },
