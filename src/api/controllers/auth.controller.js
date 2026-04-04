@@ -114,6 +114,26 @@ exports.revokeRememberedAccount = async (req, res) => {
   }
 };
 
+exports.getRememberedAccountInfo = async (req, res) => {
+  try {
+    const result = await authService.getRememberedAccountInfo(req.query);
+
+    res.status(200).json({
+      success: true,
+      account: result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        message: error.message,
+        code: error.code,
+        detail: error.detail,
+      });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.getMe = async (req, res) => {
   try {
     const user = await authService.getMe(req.user.userId);

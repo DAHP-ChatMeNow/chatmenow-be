@@ -2,9 +2,60 @@ const Account = require("../models/account.model");
 const User = require("../models/user.model");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const { getSignedUrlFromS3 } = require("../middleware/storage");
 const { generateDefaultAvatar } = require("../../utils/avatar.helper");
 
 class AuthService {
+  async buildAvatarViewUrl(avatar) {
+    if (!avatar) return "";
+
+    if (
+      avatar.startsWith("http://") ||
+      avatar.startsWith("https://") ||
+      avatar.startsWith("data:")
+    ) {
+      return avatar;
+    }
+
+    return await getSignedUrlFromS3(avatar);
+  }
+
+  async getActiveAccountOrThrow(account) {
+    if (!account) {
+      throw {
+        statusCode: 401,
+        message: "Email hoặc mật khẩu không đúng.",
+      };
+    }
+
+    if (account.accountStatus === "suspended" && account.suspendedUntil) {
+      if (new Date(account.suspendedUntil).getTime() <= Date.now()) {
+        account.accountStatus = "active";
+        account.isActive = true;
+        account.suspendedUntil = null;
+        account.statusReason = "";
+        account.statusUpdatedAt = new Date();
+        await account.save();
+      }
+    }
+
+    if (account.accountStatus === "locked" || account.isActive === false) {
+      throw {
+        statusCode: 403,
+        message: "Tài khoản đã bị khóa.",
+      };
+    }
+
+    if (account.accountStatus === "suspended") {
+      throw {
+        statusCode: 403,
+        message: "Tài khoản đang bị đình chỉ.",
+      };
+    }
+
+    return account;
+  }
+
   generateToken(accountId, userId) {
     return jwt.sign({ accountId, userId }, process.env.JWT_SECRET, {
       expiresIn: "30d",
@@ -84,13 +135,9 @@ class AuthService {
     deviceId,
     deviceName = "",
   }) {
-    const account = await Account.findOne({ email });
-    if (!account) {
-      throw {
-        statusCode: 401,
-        message: "Email hoặc mật khẩu không đúng.",
-      };
-    }
+    const account = await this.getActiveAccountOrThrow(
+      await Account.findOne({ email }),
+    );
 
     const isMatch = await account.comparePassword(password);
     if (!isMatch) {
@@ -194,12 +241,7 @@ class AuthService {
       };
     }
 
-    if (!account.isActive) {
-      throw {
-        statusCode: 403,
-        message: "Tài khoản đã bị khóa.",
-      };
-    }
+    await this.getActiveAccountOrThrow(account);
 
     const rememberedSession = (account.rememberedLogins || []).find(
       (item) =>
@@ -285,6 +327,84 @@ class AuthService {
         result.modifiedCount > 0
           ? "Đã thu hồi tài khoản đã ghi nhớ."
           : "Phiên ghi nhớ đã được thu hồi trước đó.",
+    };
+  }
+
+  async getRememberedAccountInfo({ rememberToken, deviceId }) {
+    if (!rememberToken || !deviceId) {
+      throw {
+        statusCode: 400,
+        message: "Thiếu rememberToken hoặc deviceId.",
+      };
+    }
+
+    const payload = this.verifyRememberToken(rememberToken);
+
+    if (payload.type !== "remember_login" || payload.role !== "user") {
+      throw {
+        statusCode: 403,
+        message: "Token ghi nhớ không hợp lệ cho luồng này.",
+      };
+    }
+
+    if (payload.deviceId !== deviceId) {
+      throw {
+        statusCode: 403,
+        message: "Thiết bị không khớp với phiên đã ghi nhớ.",
+      };
+    }
+
+    const account = await Account.findById(payload.accountId).select(
+      "email role rememberedLogins",
+    );
+
+    if (!account) {
+      throw {
+        statusCode: 404,
+        message: "Tài khoản không tồn tại.",
+      };
+    }
+
+    if (account.role !== "user") {
+      throw {
+        statusCode: 403,
+        message: "Chỉ tài khoản user được hỗ trợ luồng này.",
+      };
+    }
+
+    const rememberedSession = (account.rememberedLogins || []).find(
+      (item) =>
+        item.sessionId === payload.sessionId && item.deviceId === deviceId,
+    );
+
+    if (!rememberedSession) {
+      throw {
+        statusCode: 401,
+        message: "Phiên ghi nhớ đã bị thu hồi hoặc không tồn tại.",
+      };
+    }
+
+    const user = await User.findById(payload.userId).select(
+      "displayName avatar accountId",
+    );
+
+    if (!user || user.accountId.toString() !== account._id.toString()) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy hồ sơ user phù hợp.",
+      };
+    }
+
+    const avatarViewUrl = await this.buildAvatarViewUrl(user.avatar);
+
+    return {
+      userId: user._id,
+      displayName: user.displayName,
+      avatar: user.avatar,
+      avatarViewUrl,
+      email: account.email,
+      deviceId,
+      sessionId: payload.sessionId,
     };
   }
 

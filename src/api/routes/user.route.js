@@ -8,6 +8,13 @@ const { verifyToken, requireAdmin } = require("../middleware/authMiddleware");
 // Admin: Lấy danh sách tất cả người dùng
 router.get("/all", verifyToken, requireAdmin, userController.getAllUsers);
 
+router.put(
+  "/:userId/account-status",
+  verifyToken,
+  requireAdmin,
+  userController.updateAccountStatus,
+);
+
 router.get("/search", verifyToken, userController.searchUsers);
 
 // Lấy email và SĐT của user hiện tại

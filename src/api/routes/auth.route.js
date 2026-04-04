@@ -14,6 +14,8 @@ router.post(
   authController.revokeRememberedAccount,
 );
 
+router.get("/remembered-account", authController.getRememberedAccountInfo);
+
 router.get("/me", verifyToken, authController.getMe);
 
 router.put("/change-password", verifyToken, authController.changePassword);

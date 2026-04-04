@@ -26,6 +26,31 @@ class UserService {
     };
   }
 
+  buildCreatedAtFilter({ date, dateFrom, dateTo }) {
+    const createdAtFilter = {};
+
+    const safeDate = (value) => {
+      if (!value) return null;
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    };
+
+    const exactDate = safeDate(date) || safeDate(dateFrom) || safeDate(dateTo);
+    if (exactDate) {
+      const start = new Date(exactDate);
+      start.setHours(0, 0, 0, 0);
+
+      const end = new Date(exactDate);
+      end.setHours(23, 59, 59, 999);
+
+      createdAtFilter.$gte = start;
+      createdAtFilter.$lte = end;
+      return createdAtFilter;
+    }
+
+    return null;
+  }
+
   async searchUsers(keyword, currentUserId) {
     if (!keyword) {
       throw {
@@ -940,30 +965,114 @@ class UserService {
 
   /**
    * Lấy danh sách tất cả người dùng (chỉ admin)
+   * Hỗ trợ filter + sort + offset/limit.
    */
-  async getAllUsers({ page = 1, limit = 20, search = "" }) {
-    const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
-    const skip = (pageNum - 1) * limitNum;
+  async getAllUsers({
+    offset,
+    limit = 20,
+    page,
+    search = "",
+    role = "all",
+    status = "all",
+    sortBy = "newest",
+    date,
+    dateFrom,
+    dateTo,
+  }) {
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
 
-    // Build filter
-    const filter = {};
-    if (search) {
-      filter.displayName = { $regex: search, $options: "i" };
+    // Backward compatibility: nếu không truyền offset thì dùng page/limit như cũ.
+    let offsetNum;
+    if (offset !== undefined) {
+      offsetNum = Math.max(0, parseInt(offset, 10) || 0);
+    } else {
+      const pageNum = Math.max(1, parseInt(page, 10) || 1);
+      offsetNum = (pageNum - 1) * limitNum;
     }
 
+    const userFilter = {};
+    const accountFilter = {};
+    if (role && role !== "all") {
+      accountFilter.role = role;
+    }
+
+    // status UI: all | active | inactive | premium
+    if (status && status !== "all") {
+      if (status === "active") {
+        accountFilter.accountStatus = "active";
+      } else if (status === "inactive") {
+        accountFilter.accountStatus = { $in: ["suspended", "locked"] };
+      } else if (status === "premium") {
+        accountFilter.isPremium = true;
+      }
+    }
+
+    const hasAccountConstraint = Object.keys(accountFilter).length > 0;
+    if (hasAccountConstraint) {
+      const constrainedAccounts =
+        await Account.find(accountFilter).select("_id");
+      const constrainedAccountIds = constrainedAccounts.map((acc) => acc._id);
+      userFilter.accountId = { $in: constrainedAccountIds };
+    }
+
+    if (search && search.trim()) {
+      const keyword = search.trim();
+      const accountSearchFilter = {
+        ...accountFilter,
+        $or: [
+          { email: { $regex: keyword, $options: "i" } },
+          { phoneNumber: { $regex: keyword, $options: "i" } },
+        ],
+      };
+
+      const matchedAccountsByContact =
+        await Account.find(accountSearchFilter).select("_id");
+
+      const matchedAccountIdsByContact = matchedAccountsByContact.map(
+        (acc) => acc._id,
+      );
+
+      userFilter.$or = [
+        { displayName: { $regex: keyword, $options: "i" } },
+        { accountId: { $in: matchedAccountIdsByContact } },
+      ];
+    }
+
+    const createdAtFilter = this.buildCreatedAtFilter({
+      date,
+      dateFrom,
+      dateTo,
+    });
+
+    if (createdAtFilter) {
+      userFilter.createdAt = createdAtFilter;
+    }
+
+    const sortMap = {
+      newest: { createdAt: -1 },
+      oldest: { createdAt: 1 },
+      name_asc: { displayName: 1 },
+      name_desc: { displayName: -1 },
+      online_first: { isOnline: -1, lastSeen: -1 },
+    };
+
+    const finalSort = sortMap[sortBy] || sortMap.newest;
+
     const [users, total] = await Promise.all([
-      User.find(filter)
+      User.find(userFilter)
         .populate(
           "accountId",
-          "email phoneNumber role isPremium premiumExpiryDate isActive createdAt",
+          "email phoneNumber role isPremium premiumExpiryDate isActive accountStatus suspendedUntil statusReason createdAt",
         )
         .select("displayName avatar bio isOnline lastSeen createdAt")
-        .sort({ createdAt: -1 })
-        .skip(skip)
+        .sort(finalSort)
+        .skip(offsetNum)
         .limit(limitNum),
-      User.countDocuments(filter),
+      User.countDocuments(userFilter),
     ]);
+
+    const pageCurrent = Math.floor(offsetNum / limitNum) + 1;
+    const totalPages = Math.ceil(total / limitNum);
 
     return {
       users: users.map((user) => ({
@@ -978,12 +1087,99 @@ class UserService {
         phoneNumber: user.accountId?.phoneNumber || "",
         role: user.accountId?.role || "user",
         isPremium: user.accountId?.isPremium || false,
-        isActive: user.accountId?.isActive ?? true,
+        isActive: user.accountId?.accountStatus === "active",
+        accountStatus: user.accountId?.accountStatus || "active",
+        suspendedUntil: user.accountId?.suspendedUntil || null,
+        statusReason: user.accountId?.statusReason || "",
         createdAt: user.createdAt,
       })),
       total,
-      page: pageNum,
-      totalPages: Math.ceil(total / limitNum),
+      offset: offsetNum,
+      limit: limitNum,
+      page: pageCurrent,
+      totalPages,
+      hasNext: offsetNum + limitNum < total,
+      hasPrev: offsetNum > 0,
+      filters: {
+        search: search || "",
+        role,
+        status,
+        sortBy,
+        date: date || "",
+        dateFrom: dateFrom || "",
+        dateTo: dateTo || "",
+      },
+    };
+  }
+
+  async updateAccountStatus(
+    userId,
+    { accountStatus, suspendedUntil, statusReason },
+  ) {
+    const user = await User.findById(userId).select(
+      "accountId displayName avatar",
+    );
+
+    if (!user) {
+      throw {
+        statusCode: 404,
+        message: "Người dùng không tồn tại",
+      };
+    }
+
+    const account = await Account.findById(user.accountId);
+
+    if (!account) {
+      throw {
+        statusCode: 404,
+        message: "Tài khoản không tồn tại",
+      };
+    }
+
+    if (!["active", "suspended", "locked"].includes(accountStatus)) {
+      throw {
+        statusCode: 400,
+        message: "Trạng thái tài khoản không hợp lệ",
+      };
+    }
+
+    const updateData = {
+      accountStatus,
+      isActive: accountStatus === "active",
+      statusReason: statusReason || "",
+      statusUpdatedAt: new Date(),
+    };
+
+    if (accountStatus === "suspended") {
+      const parsedUntil = suspendedUntil ? new Date(suspendedUntil) : null;
+      if (!parsedUntil || Number.isNaN(parsedUntil.getTime())) {
+        throw {
+          statusCode: 400,
+          message:
+            "Vui lòng cung cấp suspendedUntil hợp lệ cho trạng thái đình chỉ",
+        };
+      }
+
+      updateData.suspendedUntil = parsedUntil;
+    } else {
+      updateData.suspendedUntil = null;
+    }
+
+    await Account.findByIdAndUpdate(account._id, updateData, {
+      new: true,
+      runValidators: true,
+    });
+
+    return {
+      _id: user._id,
+      email: account.email,
+      role: account.role,
+      accountStatus: accountStatus,
+      suspendedUntil: updateData.suspendedUntil,
+      statusReason: updateData.statusReason,
+      isActive: updateData.isActive,
+      displayName: user.displayName,
+      avatar: user.avatar,
     };
   }
 }
