@@ -83,7 +83,8 @@ exports.toggleLikePost = async (req, res) => {
 
 exports.unlikePost = async (req, res) => {
   try {
-    await postService.unlikePost(req.user.userId, req.params.id);
+    const result = await postService.unlikePost(req.user.userId, req.params.id);
+    res.status(200).json(result);
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ message: error.message });

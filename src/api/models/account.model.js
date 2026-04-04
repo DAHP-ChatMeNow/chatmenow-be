@@ -9,7 +9,26 @@ const AccountSchema = new Schema(
     role: { type: String, enum: ["user", "admin"], default: "user" },
     isPremium: { type: Boolean, default: false },
     premiumExpiryDate: { type: Date, default: null },
+    accountStatus: {
+      type: String,
+      enum: ["active", "suspended", "locked"],
+      default: "active",
+      index: true,
+    },
     isActive: { type: Boolean, default: true },
+    suspendedUntil: { type: Date, default: null },
+    statusReason: { type: String, default: "" },
+    statusUpdatedAt: { type: Date, default: null },
+
+    rememberedLogins: [
+      {
+        sessionId: { type: String, required: true },
+        deviceId: { type: String, required: true },
+        deviceName: { type: String, default: "" },
+        createdAt: { type: Date, default: Date.now },
+        lastUsedAt: { type: Date, default: Date.now },
+      },
+    ],
 
     password: { type: String, required: true },
   },

@@ -1,7 +1,6 @@
 const Message = require("../api/models/message.model");
 const Conversation = require("../api/models/conversation.model");
 const User = require("../api/models/user.model");
-const Notification = require("../api/models/notification.model");
 
 // Presence tracking for multi-device / multi-tab support
 const userSocketsMap = new Map(); // userId -> Set<socketId>
@@ -41,7 +40,10 @@ async function persistCallHistoryMessage(io, payload) {
     },
   });
 
-  historyMessage = await historyMessage.populate("senderId", "displayName avatar");
+  historyMessage = await historyMessage.populate(
+    "senderId",
+    "displayName avatar",
+  );
 
   await Conversation.findByIdAndUpdate(conversationId, {
     lastMessage: {
@@ -143,7 +145,8 @@ function initializeSocket(io) {
           receiverId,
         } = data;
 
-        const sender = await User.findById(senderId).select("displayName avatar");
+        const sender =
+          await User.findById(senderId).select("displayName avatar");
 
         const newMessage = new Message({
           conversationId,
@@ -153,7 +156,10 @@ function initializeSocket(io) {
         });
 
         let savedMessage = await newMessage.save();
-        savedMessage = await savedMessage.populate("senderId", "displayName avatar");
+        savedMessage = await savedMessage.populate(
+          "senderId",
+          "displayName avatar",
+        );
 
         await Conversation.findByIdAndUpdate(conversationId, {
           lastMessage: {
@@ -169,28 +175,7 @@ function initializeSocket(io) {
         io.to(conversationId).emit("newMessage", savedMessage);
         io.to(conversationId).emit("message:new", savedMessage);
 
-        if (receiverId) {
-          await Notification.create({
-            recipientId: receiverId,
-            senderId,
-            type: "message",
-            referenced: conversationId,
-            message: `đã gửi tin nhắn: ${(text || "").substring(0, 30)}...`,
-            isRead: false,
-          });
-
-          const notificationPayload = {
-            type: "message",
-            senderName: sender?.displayName,
-            senderAvatar: sender?.avatar,
-            content: text,
-            conversationId,
-            createdAt: new Date(),
-          };
-
-          io.to(receiverId).emit("notification", notificationPayload);
-          io.to(receiverId).emit("notification:new", notificationPayload);
-        }
+        // Do not create notification for direct messages.
       } catch (error) {
         socket.emit("error", { message: "Lỗi khi gửi tin nhắn" });
       }

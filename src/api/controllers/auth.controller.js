@@ -1,4 +1,5 @@
 const authService = require("../service/auth.service");
+const { verifyTurnstile } = require("../service/turnstile.service");
 
 exports.register = async (req, res) => {
   try {
@@ -36,7 +37,43 @@ exports.register = async (req, res) => {
 
 exports.login = async (req, res) => {
   try {
+    const { turnstileToken } = req.body;
+    const forwardedFor = req.headers["x-forwarded-for"];
+    const remoteIp =
+      typeof forwardedFor === "string"
+        ? forwardedFor.split(",")[0].trim()
+        : req.ip;
+
+    await verifyTurnstile({
+      token: turnstileToken,
+      remoteIp,
+    });
+
     const result = await authService.login(req.body);
+
+    res.status(200).json({
+      success: true,
+      token: result.token,
+      user: result.user,
+      role: result.role,
+      rememberToken: result.rememberToken,
+      rememberProfile: result.rememberProfile,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        message: error.message,
+        code: error.code,
+        detail: error.detail,
+      });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.rememberedLogin = async (req, res) => {
+  try {
+    const result = await authService.loginWithRememberToken(req.body);
 
     res.status(200).json({
       success: true,
@@ -46,7 +83,52 @@ exports.login = async (req, res) => {
     });
   } catch (error) {
     if (error.statusCode) {
-      return res.status(error.statusCode).json({ message: error.message });
+      return res.status(error.statusCode).json({
+        message: error.message,
+        code: error.code,
+        detail: error.detail,
+      });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.revokeRememberedAccount = async (req, res) => {
+  try {
+    const result = await authService.revokeRememberedAccount(req.body);
+
+    res.status(200).json({
+      success: true,
+      revoked: result.revoked,
+      message: result.message,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        message: error.message,
+        code: error.code,
+        detail: error.detail,
+      });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getRememberedAccountInfo = async (req, res) => {
+  try {
+    const result = await authService.getRememberedAccountInfo(req.query);
+
+    res.status(200).json({
+      success: true,
+      account: result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        message: error.message,
+        code: error.code,
+        detail: error.detail,
+      });
     }
     res.status(500).json({ message: error.message });
   }

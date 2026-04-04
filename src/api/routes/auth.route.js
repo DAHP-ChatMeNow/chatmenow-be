@@ -7,6 +7,15 @@ router.post("/register", authController.register);
 
 router.post("/login", authController.login);
 
+router.post("/remembered-login", authController.rememberedLogin);
+
+router.post(
+  "/remembered-account/revoke",
+  authController.revokeRememberedAccount,
+);
+
+router.get("/remembered-account", authController.getRememberedAccountInfo);
+
 router.get("/me", verifyToken, authController.getMe);
 
 router.put("/change-password", verifyToken, authController.changePassword);

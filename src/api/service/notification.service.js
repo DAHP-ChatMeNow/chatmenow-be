@@ -1,4 +1,117 @@
 const Notification = require("../models/notification.model");
+const Post = require("../models/post.model");
+const FriendRequest = require("../models/friend-request.model");
+const VideoCall = require("../models/video-call.model");
+
+function getNotificationTypeLabel(type) {
+  switch (type) {
+    case "friend_request":
+      return "đã gửi cho bạn lời mời kết bạn.";
+    case "post_like":
+      return "đã thích bài viết của bạn.";
+    case "post_comment":
+      return "đã bình luận về bài viết của bạn.";
+    case "video_call":
+      return "đang gọi cho bạn";
+    case "group_invite":
+      return "đã mời bạn vào nhóm.";
+    case "system":
+      return "có một thông báo mới.";
+    default:
+      return "có một thông báo mới.";
+  }
+}
+
+function pickPreviewImage(notification, referencedDoc) {
+  if (!referencedDoc) return null;
+
+  if (
+    notification.type === "post_like" ||
+    notification.type === "post_comment"
+  ) {
+    const firstMedia = Array.isArray(referencedDoc.media)
+      ? referencedDoc.media[0]
+      : null;
+    return firstMedia?.url || referencedDoc.authorId?.avatar || null;
+  }
+
+  if (notification.type === "friend_request") {
+    return referencedDoc.senderId?.avatar || null;
+  }
+
+  if (notification.type === "video_call") {
+    return referencedDoc.callerId?.avatar || null;
+  }
+
+  return null;
+}
+
+async function hydrateReferenced(notification) {
+  if (!notification?.referenced) {
+    return null;
+  }
+
+  const referencedId = notification.referenced;
+
+  if (
+    notification.type === "post_like" ||
+    notification.type === "post_comment"
+  ) {
+    return await Post.findById(referencedId)
+      .populate("authorId", "displayName avatar")
+      .select("content media authorId createdAt");
+  }
+
+  if (notification.type === "friend_request") {
+    return await FriendRequest.findById(referencedId)
+      .populate("senderId", "displayName avatar")
+      .populate("receiverId", "displayName avatar")
+      .select("senderId receiverId status createdAt");
+  }
+
+  if (notification.type === "video_call") {
+    return await VideoCall.findById(referencedId)
+      .populate("callerId", "displayName avatar")
+      .populate("receiverId", "displayName avatar")
+      .select("callerId receiverId status callType createdAt");
+  }
+
+  return null;
+}
+
+function normalizeNotification(notification, referencedDoc) {
+  const sender = notification.senderId || null;
+  const referencedId =
+    referencedDoc?._id?.toString?.() ||
+    notification.referenced?.toString?.() ||
+    null;
+
+  let targetUrl = null;
+  if (
+    notification.type === "post_like" ||
+    notification.type === "post_comment"
+  ) {
+    targetUrl = referencedId ? `/posts/${referencedId}` : null;
+  } else if (notification.type === "friend_request") {
+    targetUrl = referencedId
+      ? `/friends/requests/${referencedId}`
+      : "/friends/requests";
+  } else if (notification.type === "video_call") {
+    targetUrl = referencedId ? `/calls/${referencedId}` : null;
+  } else if (notification.type === "group_invite") {
+    targetUrl = referencedId ? `/chat/conversations/${referencedId}` : null;
+  }
+
+  return {
+    ...notification.toObject(),
+    senderName: sender?.displayName || null,
+    senderAvatar: sender?.avatar || null,
+    displayText: getNotificationTypeLabel(notification.type),
+    previewImage: pickPreviewImage(notification, referencedDoc),
+    targetUrl,
+    referenced: referencedDoc || notification.referenced || null,
+  };
+}
 
 class NotificationService {
   /**
@@ -9,11 +122,18 @@ class NotificationService {
       .sort({ createdAt: -1 })
       .limit(20)
       .populate("senderId", "displayName avatar")
-      .populate("referenced");
+      .lean(false);
+
+    const notifications = await Promise.all(
+      notis.map(async (notification) => {
+        const referencedDoc = await hydrateReferenced(notification);
+        return normalizeNotification(notification, referencedDoc);
+      }),
+    );
 
     return {
-      notifications: notis,
-      total: notis.length,
+      notifications,
+      total: notifications.length,
     };
   }
 
