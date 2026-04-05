@@ -20,4 +20,6 @@ router.get("/:postId/comments", verifyToken, postController.getComments);
 
 router.post("/:postId/comments", verifyToken, postController.addComment);
 
+router.post("/:postId/ai-chat", verifyToken, postController.askAiAboutPost);
+
 module.exports = router;

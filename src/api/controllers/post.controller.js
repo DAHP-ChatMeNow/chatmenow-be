@@ -102,6 +102,34 @@ exports.getComments = async (req, res) => {
       success: true,
       comments: result.comments,
       total: result.total,
+      aiSuggestion: result.aiSuggestion || null,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.askAiAboutPost = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { postId } = req.params;
+    const { content, conversationId } = req.body || {};
+
+    const result = await postService.askAiAboutPost(
+      userId,
+      postId,
+      content,
+      conversationId,
+    );
+
+    res.status(201).json({
+      success: true,
+      conversation: result.conversation,
+      userMessage: result.userMessage,
+      aiMessage: result.aiMessage,
     });
   } catch (error) {
     if (error.statusCode) {
@@ -115,9 +143,14 @@ exports.addComment = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { postId } = req.params;
-    const { content } = req.body;
+    const { content, replyToCommentId } = req.body;
 
-    const newComment = await postService.addComment(userId, postId, content);
+    const newComment = await postService.addComment(
+      userId,
+      postId,
+      content,
+      replyToCommentId,
+    );
 
     res.status(201).json(newComment);
   } catch (error) {

@@ -10,6 +10,66 @@ const {
 const { formatLastSeen } = require("../../utils/last-seen.helper");
 
 class ChatService {
+  async ensureConversationMember(conversationId, userId) {
+    const conversation = await Conversation.findById(conversationId)
+      .select("_id members.userId")
+      .lean();
+
+    if (!conversation) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy cuộc trò chuyện",
+      };
+    }
+
+    const isMember = (conversation.members || []).some(
+      (member) => String(member.userId) === String(userId),
+    );
+
+    if (!isMember) {
+      throw {
+        statusCode: 403,
+        message: "Bạn không có quyền truy cập cuộc trò chuyện này",
+      };
+    }
+
+    return conversation;
+  }
+
+  async refreshConversationLastMessage(conversationId) {
+    const latestMessage = await Message.findOne({ conversationId })
+      .sort({ createdAt: -1, _id: -1 })
+      .populate("senderId", "displayName")
+      .lean();
+
+    if (!latestMessage) {
+      await Conversation.findByIdAndUpdate(conversationId, {
+        lastMessage: null,
+        updatedAt: new Date(),
+      });
+      return;
+    }
+
+    const senderName = latestMessage.senderId?.displayName || "Người dùng";
+    const unsentPreview = "Tin nhắn đã được thu hồi";
+    const previewContent = latestMessage.isUnsent
+      ? unsentPreview
+      : latestMessage.type === "image"
+        ? "Đã gửi một ảnh"
+        : latestMessage.content;
+
+    await Conversation.findByIdAndUpdate(conversationId, {
+      lastMessage: {
+        content: previewContent,
+        senderId: latestMessage.senderId?._id || latestMessage.senderId,
+        senderName,
+        type: latestMessage.type,
+        createdAt: latestMessage.createdAt,
+      },
+      updatedAt: new Date(),
+    });
+  }
+
   /**
    * Lấy danh sách cuộc trò chuyện
    */
@@ -17,7 +77,7 @@ class ChatService {
     const conversations = await Conversation.find({
       "members.userId": userId,
     })
-      .sort({ updatedAt: -1 })
+      .sort({ isPinned: -1, updatedAt: -1 })
       .populate("members.userId", "displayName avatar isOnline lastSeen")
       .populate("lastMessage.senderId", "displayName avatar");
 
@@ -27,13 +87,18 @@ class ChatService {
   /**
    * Lấy tin nhắn trong conversation
    */
-  async getMessages(conversationId, { limit = 20, beforeId }) {
+  async getMessages(conversationId, userId, { limit = 20, beforeId }) {
     const parsedLimit = parseInt(limit, 10);
     const safeLimit = Number.isFinite(parsedLimit)
       ? Math.min(Math.max(parsedLimit, 1), 100)
       : 20;
 
-    const query = { conversationId };
+    await this.ensureConversationMember(conversationId, userId);
+
+    const query = {
+      conversationId,
+      deletedFor: { $ne: userId },
+    };
 
     if (beforeId) {
       const referenceMsg =
@@ -72,6 +137,8 @@ class ChatService {
    * Gửi tin nhắn
    */
   async sendMessage(senderId, { conversationId, content, type = "text" }) {
+    await this.ensureConversationMember(conversationId, senderId);
+
     const message = await Message.create({
       conversationId,
       senderId,
@@ -91,6 +158,135 @@ class ChatService {
       },
       updatedAt: new Date(),
     });
+
+    return message;
+  }
+
+  async unsendMessage(userId, messageId) {
+    const message = await Message.findById(messageId);
+    if (!message) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy tin nhắn",
+      };
+    }
+
+    await this.ensureConversationMember(message.conversationId, userId);
+
+    if (String(message.senderId) !== String(userId)) {
+      throw {
+        statusCode: 403,
+        message: "Bạn chỉ có thể thu hồi tin nhắn của chính mình",
+      };
+    }
+
+    if (message.isUnsent) {
+      return message;
+    }
+
+    const createdAtMs = new Date(message.createdAt).getTime();
+    const nowMs = Date.now();
+    const maxUnsendWindowMs = 30 * 60 * 1000;
+
+    if (nowMs - createdAtMs > maxUnsendWindowMs) {
+      throw {
+        statusCode: 400,
+        message: "Chỉ có thể thu hồi trong vòng 30 phút sau khi gửi",
+      };
+    }
+
+    message.isUnsent = true;
+    message.unsentAt = new Date();
+    message.content = "Tin nhắn đã được thu hồi";
+    message.attachments = [];
+    message.replyToMessageId = null;
+    message.isEdited = false;
+    message.editedAt = null;
+
+    await message.save();
+    await message.populate("senderId", "displayName avatar");
+    await this.refreshConversationLastMessage(message.conversationId);
+
+    return message;
+  }
+
+  async deleteMessageForMe(userId, messageId) {
+    const message = await Message.findById(messageId);
+    if (!message) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy tin nhắn",
+      };
+    }
+
+    await this.ensureConversationMember(message.conversationId, userId);
+
+    await Message.updateOne(
+      { _id: messageId },
+      { $addToSet: { deletedFor: userId } },
+    );
+
+    return {
+      _id: messageId,
+      conversationId: message.conversationId,
+      deletedForUserId: userId,
+    };
+  }
+
+  async editMessage(userId, messageId, content) {
+    const trimmedContent = String(content || "").trim();
+    if (!trimmedContent) {
+      throw {
+        statusCode: 400,
+        message: "Nội dung tin nhắn không được để trống",
+      };
+    }
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy tin nhắn",
+      };
+    }
+
+    await this.ensureConversationMember(message.conversationId, userId);
+
+    if (String(message.senderId) !== String(userId)) {
+      throw {
+        statusCode: 403,
+        message: "Bạn chỉ có thể sửa tin nhắn của chính mình",
+      };
+    }
+
+    if (message.isUnsent) {
+      throw {
+        statusCode: 400,
+        message: "Không thể sửa tin nhắn đã thu hồi",
+      };
+    }
+
+    if (message.type !== "text") {
+      throw {
+        statusCode: 400,
+        message: "Chỉ hỗ trợ sửa tin nhắn văn bản",
+      };
+    }
+
+    if (message.senderSource === "ai") {
+      throw {
+        statusCode: 400,
+        message: "Không thể sửa tin nhắn AI",
+      };
+    }
+
+    message.content = trimmedContent;
+    message.isEdited = true;
+    message.editedAt = new Date();
+
+    await message.save();
+    await message.populate("senderId", "displayName avatar");
+    await this.refreshConversationLastMessage(message.conversationId);
 
     return message;
   }
