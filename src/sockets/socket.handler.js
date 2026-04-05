@@ -1,6 +1,7 @@
 const Message = require("../api/models/message.model");
 const Conversation = require("../api/models/conversation.model");
 const User = require("../api/models/user.model");
+const aiService = require("../api/service/ai.service");
 
 // Presence tracking for multi-device / multi-tab support
 const userSocketsMap = new Map(); // userId -> Set<socketId>
@@ -145,12 +146,40 @@ function initializeSocket(io) {
           receiverId,
         } = data;
 
+        const normalizedSenderId = socket.data.userId || senderId;
+
+        const aiDetection = await aiService.detectAiConversationForUser(
+          normalizedSenderId,
+          conversationId,
+        );
+
+        if (aiDetection.isAiConversation) {
+          const aiResult = await aiService.sendMessageToAi(normalizedSenderId, {
+            conversationId,
+            content: text,
+          });
+
+          const emitMessage = (message) => {
+            io.to(conversationId).emit("newMessage", message);
+            io.to(conversationId).emit("message:new", message);
+
+            for (const memberId of aiResult.memberIds || []) {
+              io.to(memberId).emit("newMessage", message);
+              io.to(memberId).emit("message:new", message);
+            }
+          };
+
+          emitMessage(aiResult.userMessage);
+          emitMessage(aiResult.aiMessage);
+          return;
+        }
+
         const sender =
-          await User.findById(senderId).select("displayName avatar");
+          await User.findById(normalizedSenderId).select("displayName avatar");
 
         const newMessage = new Message({
           conversationId,
-          senderId,
+          senderId: normalizedSenderId,
           content: text,
           type,
         });
@@ -164,7 +193,7 @@ function initializeSocket(io) {
         await Conversation.findByIdAndUpdate(conversationId, {
           lastMessage: {
             content: type === "image" ? "Đã gửi một ảnh" : text,
-            senderId,
+            senderId: normalizedSenderId,
             senderName: sender?.displayName,
             type,
             createdAt: new Date(),

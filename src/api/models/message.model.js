@@ -9,6 +9,11 @@ const MessageSchema = new Schema(
       required: true,
     },
     senderId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    senderSource: {
+      type: String,
+      enum: ["user", "ai"],
+      default: "user",
+    },
 
     content: { type: String },
     type: {
@@ -55,6 +60,10 @@ const MessageSchema = new Schema(
 
     readBy: [{ type: Schema.Types.ObjectId, ref: "User" }],
     isUnsent: { type: Boolean, default: false },
+    unsentAt: { type: Date, default: null },
+    isEdited: { type: Boolean, default: false },
+    editedAt: { type: Date, default: null },
+    deletedFor: [{ type: Schema.Types.ObjectId, ref: "User" }],
   },
   { timestamps: true },
 );

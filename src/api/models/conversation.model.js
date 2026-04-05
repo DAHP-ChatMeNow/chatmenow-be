@@ -3,6 +3,8 @@ const Schema = mongoose.Schema;
 
 const ConversationSchema = new Schema({
   type: { type: String, enum: ["private", "group"], default: "private" },
+  isPinned: { type: Boolean, default: false },
+  isAiAssistant: { type: Boolean, default: false },
   
   
   name: { type: String }, 

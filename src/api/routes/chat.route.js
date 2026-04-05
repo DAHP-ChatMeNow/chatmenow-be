@@ -1,9 +1,41 @@
 const express = require("express");
 const router = express.Router();
 const chatController = require("../controllers/chat.controller");
-const { verifyToken } = require("../middleware/authMiddleware");
+const { verifyToken, requireAdmin } = require("../middleware/authMiddleware");
+const { multerUploads } = require("../middleware/storage");
 
 router.get("/conversations", verifyToken, chatController.getConversations);
+router.get(
+  "/ai/conversation",
+  verifyToken,
+  chatController.getOrCreateAiConversation,
+);
+router.post("/ai/message", verifyToken, chatController.sendMessageToAi);
+router.get(
+  "/ai/admin/config",
+  verifyToken,
+  requireAdmin,
+  chatController.getAiAdminConfig,
+);
+router.patch(
+  "/ai/admin/config",
+  verifyToken,
+  requireAdmin,
+  multerUploads,
+  chatController.updateAiAdminConfig,
+);
+router.get(
+  "/ai/admin/stats",
+  verifyToken,
+  requireAdmin,
+  chatController.getAiUsageStats,
+);
+router.get(
+  "/ai/admin/avatar",
+  verifyToken,
+  requireAdmin,
+  chatController.getAiAvatarViewUrl,
+);
 
 router.post(
   "/conversations",
@@ -36,6 +68,17 @@ router.get(
 );
 
 router.post("/messages", verifyToken, chatController.sendMessage);
+router.post(
+  "/messages/:messageId/unsend",
+  verifyToken,
+  chatController.unsendMessage,
+);
+router.delete(
+  "/messages/:messageId/me",
+  verifyToken,
+  chatController.deleteMessageForMe,
+);
+router.patch("/messages/:messageId", verifyToken, chatController.editMessage);
 
 router.post(
   "/conversations/:conversationId/members",

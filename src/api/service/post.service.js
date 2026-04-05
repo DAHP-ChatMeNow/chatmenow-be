@@ -2,6 +2,7 @@ const Post = require("../models/post.model");
 const Comment = require("../models/comment.model");
 const Notification = require("../models/notification.model");
 const User = require("../models/user.model");
+const aiService = require("./ai.service");
 const { POST_PRIVACY } = require("../../constants");
 const { uploadToS3, getSignedUrlFromS3 } = require("../middleware/storage");
 const {
@@ -245,9 +246,12 @@ class PostService {
       });
     }
 
+    const aiSuggestion = await this.buildAiSuggestionForPost(postId, "like");
+
     return {
       message: "Liked",
       isLikedByCurrentUser: true,
+      aiSuggestion,
     };
   }
 
@@ -286,24 +290,241 @@ class PostService {
    * Lấy danh sách comment
    */
   async getComments(postId) {
-    const comments = await Comment.find({ postId })
+    const comments = await Comment.find({
+      postId,
+      authorSource: { $ne: "ai" },
+    })
       .sort({ createdAt: 1 })
       .populate("userId", "displayName avatar");
+
+    const aiSuggestion = await this.buildAiSuggestionForPost(
+      postId,
+      "open_comments",
+    );
 
     return {
       comments,
       total: comments.length,
+      aiSuggestion,
     };
+  }
+
+  async buildAiSuggestionForPost(postId, trigger) {
+    try {
+      if (!(await aiService.isAutoCommentEnabled())) {
+        return null;
+      }
+
+      const post = await Post.findById(postId).select("content").lean();
+      if (!post) {
+        return null;
+      }
+
+      const recentComments = await Comment.find({ postId })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(6)
+        .populate("userId", "displayName")
+        .lean();
+
+      const commentLines = recentComments
+        .reverse()
+        .map((item) => {
+          const name = item?.userId?.displayName || "Người dùng";
+          const text = String(item?.content || "").slice(0, 200);
+          return `${name}: ${text}`;
+        })
+        .join("\n");
+
+      const prompt =
+        "Bạn là trợ lý AI cho bài viết mạng xã hội. " +
+        "Hãy tạo 1 câu gợi ý ngắn (tối đa 20 từ), tự nhiên để người dùng bấm hỏi AI thêm về post này.\n" +
+        `Ngữ cảnh trigger: ${trigger}.\n` +
+        `Nội dung post: \"${post.content || "Bài viết không có nội dung văn bản"}\"\n` +
+        `Một số bình luận gần đây:\n${commentLines || "(chưa có)"}`;
+
+      const suggestionText = await aiService.generateTextWithGemini(
+        [{ role: "user", parts: [{ text: prompt }] }],
+        "Muốn mình phân tích thêm góc nhìn về bài viết này không?",
+      );
+
+      const suggestedUserPrompt =
+        trigger === "like"
+          ? "Giải thích thêm về cảm xúc trong bài đăng này."
+          : "Phân tích thêm nội dung và cảm xúc trong bài đăng này.";
+
+      return {
+        trigger,
+        text: suggestionText,
+        action: "ask_ai_in_chat",
+        suggestedUserPrompt,
+        autoSend: true,
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async askAiAboutPost(userId, postId, content, conversationId) {
+    const question = String(content || "").trim();
+    if (!question) {
+      throw {
+        statusCode: 400,
+        message: "Nội dung hỏi AI không được để trống",
+      };
+    }
+
+    const post = await Post.findById(postId)
+      .select("content authorId media createdAt")
+      .populate("authorId", "displayName")
+      .lean();
+
+    if (!post) {
+      throw {
+        statusCode: 404,
+        message: "Bài viết không tồn tại",
+      };
+    }
+
+    const recentComments = await Comment.find({ postId })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(10)
+      .populate("userId", "displayName")
+      .lean();
+
+    const rawMedia = post.media || [];
+    const mediaStats = rawMedia.reduce(
+      (acc, item) => {
+        if (item?.type === "video") {
+          acc.videoCount += 1;
+        } else if (item?.type === "image") {
+          acc.imageCount += 1;
+        } else {
+          acc.otherCount += 1;
+        }
+
+        if (item?.duration && Number.isFinite(Number(item.duration))) {
+          acc.totalVideoDuration += Number(item.duration);
+        }
+
+        return acc;
+      },
+      {
+        videoCount: 0,
+        imageCount: 0,
+        otherCount: 0,
+        totalVideoDuration: 0,
+      },
+    );
+
+    const isVideoPost = mediaStats.videoCount > 0;
+    const isImagePost = !isVideoPost && mediaStats.imageCount > 0;
+    const isTextOnlyPost =
+      !isVideoPost && !isImagePost && rawMedia.length === 0;
+
+    let mediaSpecificGuide =
+      "Ưu tiên phân tích ý chính và cảm xúc trong phần văn bản của bài đăng.";
+
+    if (isVideoPost) {
+      mediaSpecificGuide =
+        "Đây là bài có video. Hãy ưu tiên phân tích theo trải nghiệm người xem: nhịp nội dung, cảm xúc chính, điểm gây chú ý, và gợi ý 1-2 hướng thảo luận tiếp theo. Nếu chưa xem trực tiếp được video, nói rõ bạn đang suy luận từ mô tả và metadata video.";
+    } else if (isImagePost) {
+      mediaSpecificGuide =
+        "Đây là bài có ảnh. Hãy ưu tiên phân tích cảm xúc thị giác, thông điệp hình ảnh, và mối liên hệ giữa caption với ảnh; thêm 1 câu hỏi gợi mở thảo luận.";
+    } else if (isTextOnlyPost) {
+      mediaSpecificGuide =
+        "Đây là bài chỉ có text. Hãy đi sâu vào ngôn từ, sắc thái cảm xúc, ngữ cảnh người viết và nêu góc nhìn đồng cảm/phan bien một cách lịch sự.";
+    }
+
+    const mediaContext = rawMedia
+      .map((item, index) => {
+        const mediaType = item?.type || "unknown";
+        const duration = item?.duration
+          ? `, duration=${Math.round(Number(item.duration))}s`
+          : "";
+        const source = String(item?.url || "").slice(0, 320);
+        return `[${index + 1}] type=${mediaType}${duration}, source=${source || "N/A"}`;
+      })
+      .join("\n");
+
+    const commentContext = recentComments
+      .reverse()
+      .map((item) => {
+        const name = item?.userId?.displayName || "Người dùng";
+        const text = String(item?.content || "").slice(0, 240);
+        return `${name}: ${text}`;
+      })
+      .join("\n");
+
+    const contextNote =
+      "Người dùng đang hỏi về một bài post. Hãy dùng ngữ cảnh này để trả lời sát nội dung:\n" +
+      "Mục tiêu: trả lời tập trung, không lan man, nhưng đầy đủ ý chính.\n" +
+      "Yêu cầu đầu ra:\n" +
+      "- Viết tiếng Việt tự nhiên, khoảng 250-380 từ.\n" +
+      "- Không mở đầu xã giao kiểu 'Chào bạn'.\n" +
+      "- Không nhắc lại nguyên văn đề bài dài dòng.\n" +
+      "- Bám sát dữ liệu được cung cấp, không suy diễn quá xa.\n" +
+      "- Mỗi mục cần 2-3 câu, có ví dụ/bằng chứng cụ thể từ nội dung post hoặc media metadata nếu có.\n" +
+      "- Trình bày đúng 4 dòng theo mẫu sau:\n" +
+      "Ý chính: ...\n" +
+      "Cảm xúc nổi bật: ...\n" +
+      "Bằng chứng từ bài đăng: ...\n" +
+      "Gợi ý trao đổi tiếp: ...\n" +
+      `Hướng phân tích theo loại media: ${mediaSpecificGuide}\n` +
+      `- Tác giả post: ${post.authorId?.displayName || "Không rõ"}\n` +
+      `- Thời gian đăng: ${post.createdAt ? new Date(post.createdAt).toISOString() : "Không rõ"}\n` +
+      `- Nội dung post: \"${post.content || "Bài viết không có nội dung văn bản"}\"\n` +
+      `- Thống kê media: videos=${mediaStats.videoCount}, images=${mediaStats.imageCount}, others=${mediaStats.otherCount}, totalVideoDuration=${Math.round(mediaStats.totalVideoDuration)}s\n` +
+      `- Media đính kèm (ảnh/video):\n${mediaContext || "(không có media)"}\n` +
+      `- Bình luận gần đây:\n${commentContext || "(chưa có bình luận)"}`;
+
+    return await aiService.sendMessageToAi(userId, {
+      content: question,
+      conversationId,
+      contextNote,
+      historyLimit: 10,
+      generationConfig: {
+        temperature: 0.35,
+        maxOutputTokens: 1200,
+      },
+      timeoutMs: 30000,
+    });
   }
 
   /**
    * Thêm comment
    */
-  async addComment(userId, postId, content) {
+  async addComment(userId, postId, content, replyToCommentId = null) {
+    let validatedReplyToCommentId = null;
+
+    if (replyToCommentId) {
+      const parentComment = await Comment.findOne({
+        _id: replyToCommentId,
+        postId,
+      }).select("_id authorSource");
+
+      if (!parentComment) {
+        throw {
+          statusCode: 404,
+          message: "Không tìm thấy comment cha để trả lời",
+        };
+      }
+
+      if (parentComment.authorSource === "ai") {
+        throw {
+          statusCode: 400,
+          message:
+            "Không thể reply AI bằng comment post. Hãy dùng tính năng chat AI cho bài viết này.",
+        };
+      }
+
+      validatedReplyToCommentId = parentComment._id;
+    }
+
     const newComment = await Comment.create({
       postId,
       userId,
       content,
+      replyToCommentId: validatedReplyToCommentId,
     });
 
     // Tăng số lượng comment
@@ -340,7 +561,7 @@ class PostService {
       });
     }
 
-    return newComment;
+    return newComment.toObject();
   }
 }
 

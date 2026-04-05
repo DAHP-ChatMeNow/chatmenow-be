@@ -1,8 +1,14 @@
 const chatService = require("../service/chat.service");
+const aiService = require("../service/ai.service");
 const Conversation = require("../models/conversation.model");
 
 exports.getConversations = async (req, res) => {
   try {
+    try {
+      await aiService.getOrCreateAiConversation(req.user.userId);
+    } catch (error) {
+      // Ignore AI bootstrap errors to avoid breaking regular chat listing.
+    }
     const conversations = await chatService.getConversations(req.user.userId);
 
     res.json({
@@ -17,15 +23,140 @@ exports.getConversations = async (req, res) => {
   }
 };
 
+exports.getOrCreateAiConversation = async (req, res) => {
+  try {
+    const conversation = await aiService.getOrCreateAiConversation(
+      req.user.userId,
+    );
+
+    res.status(200).json({
+      success: true,
+      conversation,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.sendMessageToAi = async (req, res) => {
+  try {
+    const senderId = req.user.userId;
+    const result = await aiService.sendMessageToAi(senderId, req.body || {});
+
+    const io = req.app.get("io");
+
+    const emitMessage = (message) => {
+      io.to(result.conversation._id.toString()).emit("newMessage", message);
+      io.to(result.conversation._id.toString()).emit("message:new", message);
+
+      for (const memberId of result.memberIds || []) {
+        io.to(memberId).emit("newMessage", message);
+        io.to(memberId).emit("message:new", message);
+      }
+    };
+
+    emitMessage(result.userMessage);
+    emitMessage(result.aiMessage);
+
+    res.status(201).json({
+      success: true,
+      conversation: result.conversation,
+      userMessage: result.userMessage,
+      aiMessage: result.aiMessage,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getAiAdminConfig = async (req, res) => {
+  try {
+    const config = await aiService.getAiAdminConfig();
+
+    res.status(200).json({
+      success: true,
+      config,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.updateAiAdminConfig = async (req, res) => {
+  try {
+    const result = await aiService.updateAiAdminConfig(
+      req.body || {},
+      req.file,
+    );
+
+    res.status(200).json({
+      success: true,
+      config: result.config,
+      key: result.key || "",
+      message: "Đã cập nhật cấu hình AI",
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getAiUsageStats = async (req, res) => {
+  try {
+    const stats = await aiService.getAiUsageStats(req.query.days);
+
+    res.status(200).json({
+      success: true,
+      stats,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getAiAvatarViewUrl = async (req, res) => {
+  try {
+    const result = await aiService.getAiAvatarViewUrl();
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.getMessages = async (req, res) => {
   try {
     const { conversationId } = req.params;
     const { limit, beforeId } = req.query;
 
-    const result = await chatService.getMessages(conversationId, {
-      limit,
-      beforeId,
-    });
+    const result = await chatService.getMessages(
+      conversationId,
+      req.user.userId,
+      {
+        limit,
+        beforeId,
+      },
+    );
 
     res.status(200).json({
       success: true,
@@ -43,9 +174,111 @@ exports.getMessages = async (req, res) => {
   }
 };
 
+exports.unsendMessage = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { messageId } = req.params;
+    const message = await chatService.unsendMessage(userId, messageId);
+
+    const io = req.app.get("io");
+    const conversationId = message.conversationId?.toString();
+
+    if (conversationId) {
+      io.to(conversationId).emit("message:updated", message);
+      io.to(conversationId).emit("message:unsent", message);
+    }
+
+    res.status(200).json({ success: true, message });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.deleteMessageForMe = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { messageId } = req.params;
+    const result = await chatService.deleteMessageForMe(userId, messageId);
+
+    const io = req.app.get("io");
+    io.to(userId).emit("message:deleted-for-me", result);
+
+    res.status(200).json({ success: true, result });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.editMessage = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { messageId } = req.params;
+    const { content } = req.body || {};
+    const message = await chatService.editMessage(userId, messageId, content);
+
+    const io = req.app.get("io");
+    const conversationId = message.conversationId?.toString();
+
+    if (conversationId) {
+      io.to(conversationId).emit("message:updated", message);
+      io.to(conversationId).emit("message:edited", message);
+    }
+
+    res.status(200).json({ success: true, message });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.sendMessage = async (req, res) => {
   try {
     const senderId = req.user.userId;
+    const { conversationId, content } = req.body || {};
+    const aiDetection = conversationId
+      ? await aiService.detectAiConversationForUser(senderId, conversationId)
+      : { isAiConversation: false };
+
+    if (aiDetection.isAiConversation) {
+      const aiResult = await aiService.sendMessageToAi(senderId, {
+        conversationId,
+        content,
+      });
+
+      const io = req.app.get("io");
+
+      const emitMessage = (message) => {
+        io.to(aiResult.conversation._id.toString()).emit("newMessage", message);
+        io.to(aiResult.conversation._id.toString()).emit(
+          "message:new",
+          message,
+        );
+
+        for (const memberId of aiResult.memberIds || []) {
+          io.to(memberId).emit("newMessage", message);
+          io.to(memberId).emit("message:new", message);
+        }
+      };
+
+      emitMessage(aiResult.userMessage);
+      emitMessage(aiResult.aiMessage);
+
+      return res.status(201).json({
+        success: true,
+        conversation: aiResult.conversation,
+        userMessage: aiResult.userMessage,
+        aiMessage: aiResult.aiMessage,
+      });
+    }
+
     const message = await chatService.sendMessage(senderId, req.body);
 
     const io = req.app.get("io");

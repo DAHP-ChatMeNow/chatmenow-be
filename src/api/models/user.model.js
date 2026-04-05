@@ -6,8 +6,9 @@ const UserSchema = new Schema(
     accountId: {
       type: Schema.Types.ObjectId,
       ref: "Account",
-      required: true,
+      required: false,
       unique: true,
+      sparse: true,
     },
 
     displayName: { type: String, required: true },
@@ -22,6 +23,7 @@ const UserSchema = new Schema(
     lastSeen: { type: Date, default: Date.now },
 
     friends: [{ type: Schema.Types.ObjectId, ref: "User" }],
+    isAiBot: { type: Boolean, default: false },
   },
   {
     timestamps: true,
