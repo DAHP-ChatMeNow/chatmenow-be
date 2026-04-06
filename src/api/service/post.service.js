@@ -185,6 +185,311 @@ class PostService {
     return await this.resolvePostMedia(postObj);
   }
 
+  async getAllPostsForAdmin({
+    page = 1,
+    limit = 20,
+    q,
+    privacy,
+    authorId,
+    sortBy = "createdAt",
+    sortOrder = "desc",
+  }) {
+    const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const keyword = String(q || "").trim();
+
+    const filter = {};
+
+    if (privacy && Object.values(POST_PRIVACY).includes(privacy)) {
+      filter.privacy = privacy;
+    }
+
+    if (authorId) {
+      filter.authorId = authorId;
+    }
+
+    if (keyword) {
+      const regex = new RegExp(
+        keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        "i",
+      );
+      const matchedUsers = await User.find({ displayName: regex })
+        .select("_id")
+        .lean();
+      const authorIds = matchedUsers.map((u) => u._id);
+
+      filter.$or = [{ content: regex }];
+      if (authorIds.length > 0) {
+        filter.$or.push({ authorId: { $in: authorIds } });
+      }
+    }
+
+    const allowedSortFields = ["createdAt", "likesCount", "commentsCount"];
+    const finalSortBy = allowedSortFields.includes(sortBy)
+      ? sortBy
+      : "createdAt";
+    const finalSortOrder = String(sortOrder).toLowerCase() === "asc" ? 1 : -1;
+
+    const [total, posts] = await Promise.all([
+      Post.countDocuments(filter),
+      Post.find(filter)
+        .sort({ [finalSortBy]: finalSortOrder, _id: -1 })
+        .skip((parsedPage - 1) * parsedLimit)
+        .limit(parsedLimit)
+        .populate("authorId", "displayName avatar"),
+    ]);
+
+    const resolvedPosts = await Promise.all(
+      posts.map(async (post) => this.resolvePostMedia(post.toObject())),
+    );
+
+    return {
+      posts: resolvedPosts,
+      total,
+      page: parsedPage,
+      limit: parsedLimit,
+    };
+  }
+
+  async getPostDetailForAdmin(postId) {
+    const post = await Post.findById(postId).populate(
+      "authorId",
+      "displayName avatar",
+    );
+
+    if (!post) {
+      throw {
+        statusCode: 404,
+        message: "Bài viết không tồn tại",
+      };
+    }
+
+    return await this.resolvePostMedia(post.toObject());
+  }
+
+  async getPostStatsForAdmin({ days = 30 } = {}) {
+    const parsedDays = Math.min(Math.max(parseInt(days, 10) || 30, 1), 365);
+    const since = new Date(Date.now() - parsedDays * 24 * 60 * 60 * 1000);
+
+    const [
+      totalPosts,
+      postsInRange,
+      totalLikesAgg,
+      totalCommentsAgg,
+      privacyAgg,
+      dailyAgg,
+      topPostsRaw,
+    ] = await Promise.all([
+      Post.countDocuments({}),
+      Post.countDocuments({ createdAt: { $gte: since } }),
+      Post.aggregate([
+        { $group: { _id: null, totalLikes: { $sum: "$likesCount" } } },
+      ]),
+      Post.aggregate([
+        { $group: { _id: null, totalComments: { $sum: "$commentsCount" } } },
+      ]),
+      Post.aggregate([{ $group: { _id: "$privacy", count: { $sum: 1 } } }]),
+      Post.aggregate([
+        { $match: { createdAt: { $gte: since } } },
+        {
+          $group: {
+            _id: {
+              year: { $year: "$createdAt" },
+              month: { $month: "$createdAt" },
+              day: { $dayOfMonth: "$createdAt" },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } },
+      ]),
+      Post.find({})
+        .sort({ likesCount: -1, commentsCount: -1, createdAt: -1 })
+        .limit(5)
+        .select("content likesCount commentsCount privacy createdAt authorId")
+        .populate("authorId", "displayName avatar")
+        .lean(),
+    ]);
+
+    const privacyStats = {
+      [POST_PRIVACY.PUBLIC]: 0,
+      [POST_PRIVACY.FRIENDS]: 0,
+      [POST_PRIVACY.PRIVATE]: 0,
+    };
+
+    for (const row of privacyAgg) {
+      if (row?._id && Object.hasOwn(privacyStats, row._id)) {
+        privacyStats[row._id] = row.count;
+      }
+    }
+
+    const totalLikes = totalLikesAgg?.[0]?.totalLikes || 0;
+    const totalComments = totalCommentsAgg?.[0]?.totalComments || 0;
+    const avgLikesPerPost = totalPosts > 0 ? totalLikes / totalPosts : 0;
+    const avgCommentsPerPost = totalPosts > 0 ? totalComments / totalPosts : 0;
+
+    const postsPerDay = dailyAgg.map((item) => {
+      const y = item._id?.year;
+      const m = String(item._id?.month || "").padStart(2, "0");
+      const d = String(item._id?.day || "").padStart(2, "0");
+      return {
+        date: `${y}-${m}-${d}`,
+        count: item.count,
+      };
+    });
+
+    const topPosts = topPostsRaw.map((post) => ({
+      _id: post._id,
+      contentPreview: String(post.content || "").slice(0, 120),
+      likesCount: post.likesCount || 0,
+      commentsCount: post.commentsCount || 0,
+      privacy: post.privacy,
+      createdAt: post.createdAt,
+      author: post.authorId || null,
+    }));
+
+    return {
+      rangeDays: parsedDays,
+      totalPosts,
+      postsInRange,
+      totalLikes,
+      totalComments,
+      avgLikesPerPost: Number(avgLikesPerPost.toFixed(2)),
+      avgCommentsPerPost: Number(avgCommentsPerPost.toFixed(2)),
+      privacyStats,
+      postsPerDay,
+      topPosts,
+    };
+  }
+
+  async getPostLikesForAdmin(postId, { page = 1, limit = 20 } = {}) {
+    const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+
+    const post = await Post.findById(postId).select("likes likesCount").lean();
+
+    if (!post) {
+      throw {
+        statusCode: 404,
+        message: "Bài viết không tồn tại",
+      };
+    }
+
+    const allLikeIds = (post.likes || []).map((id) => id.toString());
+    const total = allLikeIds.length;
+    const start = (parsedPage - 1) * parsedLimit;
+    const pagedIds = allLikeIds.slice(start, start + parsedLimit);
+
+    let users = [];
+    if (pagedIds.length > 0) {
+      const userDocs = await User.find({ _id: { $in: pagedIds } })
+        .select("displayName avatar isOnline lastSeen")
+        .lean();
+
+      const userMap = new Map(userDocs.map((u) => [u._id.toString(), u]));
+      users = pagedIds.map((id) => userMap.get(id)).filter(Boolean);
+    }
+
+    return {
+      users,
+      total,
+      page: parsedPage,
+      limit: parsedLimit,
+    };
+  }
+
+  async getPostCommentsForAdmin(
+    postId,
+    { page = 1, limit = 20, authorSource } = {},
+  ) {
+    const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+
+    const postExists = await Post.exists({ _id: postId });
+    if (!postExists) {
+      throw {
+        statusCode: 404,
+        message: "Bài viết không tồn tại",
+      };
+    }
+
+    const filter = { postId };
+    if (authorSource) {
+      const normalizedAuthorSource = String(authorSource).trim().toLowerCase();
+      if (!["user", "ai"].includes(normalizedAuthorSource)) {
+        throw {
+          statusCode: 400,
+          message: "authorSource phải là 'user' hoặc 'ai'",
+        };
+      }
+      filter.authorSource = normalizedAuthorSource;
+    }
+
+    const [total, comments] = await Promise.all([
+      Comment.countDocuments(filter),
+      Comment.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip((parsedPage - 1) * parsedLimit)
+        .limit(parsedLimit)
+        .populate("userId", "displayName avatar isOnline lastSeen"),
+    ]);
+
+    return {
+      comments: comments.map((comment) => comment.toObject()),
+      total,
+      page: parsedPage,
+      limit: parsedLimit,
+    };
+  }
+
+  async updatePostPrivacyForAdmin(postId, privacy) {
+    if (!Object.values(POST_PRIVACY).includes(privacy)) {
+      throw {
+        statusCode: 400,
+        message: "Giá trị privacy không hợp lệ",
+      };
+    }
+
+    const post = await Post.findByIdAndUpdate(
+      postId,
+      { privacy },
+      { new: true },
+    ).populate("authorId", "displayName avatar");
+
+    if (!post) {
+      throw {
+        statusCode: 404,
+        message: "Bài viết không tồn tại",
+      };
+    }
+
+    return await this.resolvePostMedia(post.toObject());
+  }
+
+  async deletePostForAdmin(postId) {
+    const post = await Post.findById(postId).lean();
+
+    if (!post) {
+      throw {
+        statusCode: 404,
+        message: "Bài viết không tồn tại",
+      };
+    }
+
+    const [commentResult, notificationResult] = await Promise.all([
+      Comment.deleteMany({ postId }),
+      Notification.deleteMany({ referenced: postId }),
+    ]);
+
+    await Post.findByIdAndDelete(postId);
+
+    return {
+      postId,
+      deletedComments: commentResult?.deletedCount || 0,
+      deletedNotifications: notificationResult?.deletedCount || 0,
+    };
+  }
+
   /**
    * Toggle like/bỏ like bài viết
    */

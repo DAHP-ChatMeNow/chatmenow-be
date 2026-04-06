@@ -65,6 +65,140 @@ exports.getPostDetail = async (req, res) => {
   }
 };
 
+exports.getAllPostsForAdmin = async (req, res) => {
+  try {
+    const result = await postService.getAllPostsForAdmin(req.query || {});
+
+    res.status(200).json({
+      success: true,
+      posts: result.posts,
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getPostStatsForAdmin = async (req, res) => {
+  try {
+    const stats = await postService.getPostStatsForAdmin(req.query || {});
+
+    res.status(200).json({
+      success: true,
+      stats,
+      ...stats,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getPostDetailForAdmin = async (req, res) => {
+  try {
+    const post = await postService.getPostDetailForAdmin(req.params.id);
+
+    res.status(200).json({
+      success: true,
+      post,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getPostLikesForAdmin = async (req, res) => {
+  try {
+    const result = await postService.getPostLikesForAdmin(
+      req.params.id,
+      req.query || {},
+    );
+
+    res.status(200).json({
+      success: true,
+      users: result.users,
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getPostCommentsForAdmin = async (req, res) => {
+  try {
+    const result = await postService.getPostCommentsForAdmin(
+      req.params.id,
+      req.query || {},
+    );
+
+    res.status(200).json({
+      success: true,
+      comments: result.comments,
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.updatePostPrivacyForAdmin = async (req, res) => {
+  try {
+    const { privacy } = req.body || {};
+    const post = await postService.updatePostPrivacyForAdmin(
+      req.params.id,
+      privacy,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Đã cập nhật quyền riêng tư bài viết",
+      post,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.deletePostForAdmin = async (req, res) => {
+  try {
+    const result = await postService.deletePostForAdmin(req.params.id);
+
+    res.status(200).json({
+      success: true,
+      message: "Đã xóa bài viết",
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.toggleLikePost = async (req, res) => {
   try {
     const postId = req.params.id;

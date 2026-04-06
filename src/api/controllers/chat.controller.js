@@ -242,12 +242,24 @@ exports.editMessage = async (req, res) => {
 exports.sendMessage = async (req, res) => {
   try {
     const senderId = req.user.userId;
-    const { conversationId, content } = req.body || {};
+    const { conversationId, content, attachments, type } = req.body || {};
     const aiDetection = conversationId
       ? await aiService.detectAiConversationForUser(senderId, conversationId)
       : { isAiConversation: false };
 
     if (aiDetection.isAiConversation) {
+      if (
+        (Array.isArray(attachments) && attachments.length > 0) ||
+        type === "image" ||
+        type === "audio" ||
+        type === "file" ||
+        type === "video"
+      ) {
+        return res.status(400).json({
+          message: "Cuộc trò chuyện AI hiện chỉ hỗ trợ tin nhắn văn bản",
+        });
+      }
+
       const aiResult = await aiService.sendMessageToAi(senderId, {
         conversationId,
         content,

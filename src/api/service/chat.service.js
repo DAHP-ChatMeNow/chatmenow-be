@@ -10,6 +10,144 @@ const {
 const { formatLastSeen } = require("../../utils/last-seen.helper");
 
 class ChatService {
+  getMessagePreviewContent(message) {
+    if (message.isUnsent) {
+      return "Tin nhắn đã được thu hồi";
+    }
+
+    switch (message.type) {
+      case MESSAGE_TYPES.IMAGE:
+        return "Đã gửi một ảnh";
+      case MESSAGE_TYPES.VIDEO:
+        return "Đã gửi một video";
+      case MESSAGE_TYPES.AUDIO:
+        return "Đã gửi một bản ghi âm";
+      case MESSAGE_TYPES.FILE:
+        return "Đã gửi một tệp";
+      case MESSAGE_TYPES.SYSTEM:
+        return message.content || "Tin nhắn hệ thống";
+      default:
+        return message.content || "Tin nhắn";
+    }
+  }
+
+  normalizeAttachments(attachments) {
+    if (!attachments) {
+      return [];
+    }
+
+    if (!Array.isArray(attachments)) {
+      throw {
+        statusCode: 400,
+        message: "attachments phải là mảng",
+      };
+    }
+
+    if (attachments.length > 10) {
+      throw {
+        statusCode: 400,
+        message: "Tối đa 10 tệp đính kèm cho mỗi tin nhắn",
+      };
+    }
+
+    return attachments.map((item) => {
+      const url = String(item?.url || item?.key || "").trim();
+      const fileType = String(item?.fileType || item?.contentType || "").trim();
+      const fileName = String(item?.fileName || "").trim();
+      const parsedFileSize = Number(item?.fileSize || 0);
+
+      if (!url) {
+        throw {
+          statusCode: 400,
+          message: "Thiếu url (hoặc key) trong attachment",
+        };
+      }
+
+      if (
+        item?.fileSize != null &&
+        (!Number.isFinite(parsedFileSize) || parsedFileSize < 0)
+      ) {
+        throw {
+          statusCode: 400,
+          message: "fileSize trong attachment không hợp lệ",
+        };
+      }
+
+      return {
+        url,
+        fileType,
+        fileName,
+        fileSize: Number.isFinite(parsedFileSize) ? parsedFileSize : 0,
+      };
+    });
+  }
+
+  resolveMessageType(requestedType, attachments) {
+    const normalizedType = String(requestedType || "")
+      .trim()
+      .toLowerCase();
+
+    if (normalizedType && normalizedType !== MESSAGE_TYPES.TEXT) {
+      return normalizedType;
+    }
+
+    if (attachments.length === 0) {
+      return MESSAGE_TYPES.TEXT;
+    }
+
+    const firstMime = attachments[0].fileType || "";
+    if (firstMime.startsWith("image/")) {
+      return MESSAGE_TYPES.IMAGE;
+    }
+    if (firstMime.startsWith("audio/")) {
+      return MESSAGE_TYPES.AUDIO;
+    }
+    if (firstMime.startsWith("video/")) {
+      return MESSAGE_TYPES.VIDEO;
+    }
+
+    return MESSAGE_TYPES.FILE;
+  }
+
+  validateOutgoingMessagePayload({ content, type, attachments }) {
+    const trimmedContent = String(content || "").trim();
+    const allowedTypes = Object.values(MESSAGE_TYPES);
+
+    if (!allowedTypes.includes(type)) {
+      throw {
+        statusCode: 400,
+        message: "Loại tin nhắn không hợp lệ",
+      };
+    }
+
+    if (type === MESSAGE_TYPES.SYSTEM) {
+      throw {
+        statusCode: 400,
+        message: "Không thể gửi tin nhắn hệ thống từ client",
+      };
+    }
+
+    if (
+      type === MESSAGE_TYPES.TEXT &&
+      !trimmedContent &&
+      attachments.length === 0
+    ) {
+      throw {
+        statusCode: 400,
+        message: "Nội dung tin nhắn không được để trống",
+      };
+    }
+
+    if (type !== MESSAGE_TYPES.TEXT && attachments.length === 0) {
+      throw {
+        statusCode: 400,
+        message: "Tin nhắn media phải có ít nhất 1 attachment",
+      };
+    }
+
+    return trimmedContent;
+  }
+
   async ensureConversationMember(conversationId, userId) {
     const conversation = await Conversation.findById(conversationId)
       .select("_id members.userId")
@@ -51,12 +189,7 @@ class ChatService {
     }
 
     const senderName = latestMessage.senderId?.displayName || "Người dùng";
-    const unsentPreview = "Tin nhắn đã được thu hồi";
-    const previewContent = latestMessage.isUnsent
-      ? unsentPreview
-      : latestMessage.type === "image"
-        ? "Đã gửi một ảnh"
-        : latestMessage.content;
+    const previewContent = this.getMessagePreviewContent(latestMessage);
 
     await Conversation.findByIdAndUpdate(conversationId, {
       lastMessage: {
@@ -136,24 +269,36 @@ class ChatService {
   /**
    * Gửi tin nhắn
    */
-  async sendMessage(senderId, { conversationId, content, type = "text" }) {
+  async sendMessage(
+    senderId,
+    { conversationId, content, type = MESSAGE_TYPES.TEXT, attachments = [] },
+  ) {
     await this.ensureConversationMember(conversationId, senderId);
+
+    const normalizedAttachments = this.normalizeAttachments(attachments);
+    const resolvedType = this.resolveMessageType(type, normalizedAttachments);
+    const trimmedContent = this.validateOutgoingMessagePayload({
+      content,
+      type: resolvedType,
+      attachments: normalizedAttachments,
+    });
 
     const message = await Message.create({
       conversationId,
       senderId,
-      content,
-      type,
+      content: trimmedContent,
+      type: resolvedType,
+      attachments: normalizedAttachments,
     });
 
     await message.populate("senderId", "displayName avatar");
 
     await Conversation.findByIdAndUpdate(conversationId, {
       lastMessage: {
-        content: type === "image" ? "Đã gửi một ảnh" : content,
+        content: this.getMessagePreviewContent(message),
         senderId,
         senderName: message.senderId.displayName,
-        type,
+        type: resolvedType,
         createdAt: message.createdAt,
       },
       updatedAt: new Date(),

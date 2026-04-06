@@ -122,10 +122,31 @@ const getSignedUrlFromS3 = async (key) => {
   }
 };
 
+// Get signed URL to upload file to S3 (valid for 10 minutes)
+const getSignedUploadUrlFromS3 = async (key, contentType) => {
+  if (!key || !contentType) return null;
+
+  const command = new PutObjectCommand({
+    Bucket: process.env.S3_BUCKET_NAME,
+    Key: key,
+    ContentType: contentType,
+  });
+
+  try {
+    const signedUrl = await getSignedUrl(s3Client, command, {
+      expiresIn: 600,
+    });
+    return signedUrl;
+  } catch (error) {
+    throw new Error(`Lỗi khi tạo signed upload URL: ${error.message}`);
+  }
+};
+
 module.exports = {
   multerUploads,
   multerPostMedia,
   multerStoryMedia,
   uploadToS3,
   getSignedUrlFromS3,
+  getSignedUploadUrlFromS3,
 };

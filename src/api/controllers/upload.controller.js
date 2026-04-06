@@ -59,8 +59,31 @@ const getPresignedUrl = async (req, res) => {
   }
 };
 
+const getChatAttachmentUploadUrl = async (req, res) => {
+  try {
+    const { fileName, contentType, fileSize } = req.body || {};
+    const result = await uploadService.createChatAttachmentUpload({
+      userId: req.user.userId,
+      fileName,
+      contentType,
+      fileSize,
+    });
+
+    res.status(200).json(result);
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ msg: err.message });
+    }
+    res.status(500).json({
+      msg: "Lỗi server khi tạo upload URL cho file chat",
+      error: err.message,
+    });
+  }
+};
+
 module.exports = {
   uploadImage,
   deleteAvatar,
   getPresignedUrl,
+  getChatAttachmentUploadUrl,
 };
