@@ -9,6 +9,7 @@ const notiRoute = require("./notification.route");
 const uploadRoute = require("./upload.route");
 const livekitRoute = require("./livekit.route");
 const storyRoute = require("./story.route");
+const adminRoute = require("./admin.route");
 
 router.use("/auth", authRoute);
 router.use("/users", userRoute);
@@ -17,6 +18,7 @@ router.use("/chat", chatRoute);
 router.use("/notifications", notiRoute);
 router.use("/upload", uploadRoute);
 router.use("/stories", storyRoute);
+router.use("/admin", adminRoute);
 router.use("/", livekitRoute);
 
 module.exports = router;
