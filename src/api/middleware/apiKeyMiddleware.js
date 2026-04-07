@@ -1,6 +1,10 @@
 const crypto = require("crypto");
 
 exports.apiKeyMiddleware = (req, res, next) => {
+  if (req.method === "OPTIONS") {
+    return next();
+  }
+
   const apiKey = req.headers["x-api-key"];
 
   if (!apiKey) {
