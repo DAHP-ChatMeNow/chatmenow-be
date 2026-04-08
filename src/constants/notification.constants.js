@@ -5,6 +5,7 @@ const NOTIFICATION_TYPES = {
   POST_COMMENT: "post_comment",
   SYSTEM: "system",
   GROUP_INVITE: "group_invite",
+  GROUP_MEMBER_REQUEST: "group_member_request",
   VIDEO_CALL: "video_call",
 };
 

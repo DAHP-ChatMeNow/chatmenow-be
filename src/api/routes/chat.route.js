@@ -67,6 +67,36 @@ router.get(
   chatController.getMessages,
 );
 
+router.patch(
+  "/conversations/:conversationId/read",
+  verifyToken,
+  chatController.markConversationAsRead,
+);
+
+router.post(
+  "/conversations/:conversationId/unread-summary",
+  verifyToken,
+  chatController.getUnreadSummary,
+);
+
+router.get(
+  "/conversations/:conversationId/unread-summary/candidates",
+  verifyToken,
+  chatController.getUnreadSummaryCandidates,
+);
+
+router.get(
+  "/conversations/:conversationId/unread-summary/history",
+  verifyToken,
+  chatController.getUnreadSummaryHistory,
+);
+
+router.get(
+  "/conversations/:conversationId/unread-summary/history/:summaryId/messages",
+  verifyToken,
+  chatController.getUnreadSummaryMessages,
+);
+
 router.post("/messages", verifyToken, chatController.sendMessage);
 router.post(
   "/messages/:messageId/unsend",
@@ -86,10 +116,28 @@ router.post(
   chatController.addMemberToGroup,
 );
 
+router.post(
+  "/group-member-requests/:notificationId/approve",
+  verifyToken,
+  chatController.approveGroupMemberRequest,
+);
+
 router.delete(
   "/conversations/:conversationId/members/:memberId",
   verifyToken,
   chatController.removeMemberFromGroup,
+);
+
+router.post(
+  "/conversations/:conversationId/leave",
+  verifyToken,
+  chatController.leaveGroup,
+);
+
+router.post(
+  "/conversations/:conversationId/transfer-admin",
+  verifyToken,
+  chatController.transferGroupAdmin,
 );
 
 router.delete(
