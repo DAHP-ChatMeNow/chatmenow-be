@@ -36,6 +36,23 @@ exports.getUserProfile = async (req, res) => {
   }
 };
 
+exports.getBlockedUsers = async (req, res) => {
+  try {
+    const result = await userService.getBlockedUsers(req.user.userId);
+
+    res.status(200).json({
+      success: true,
+      blockedUsers: result.blockedUsers,
+      total: result.total,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.getFriendProfile = async (req, res) => {
   try {
     const viewerId = req.user.userId;
@@ -129,6 +146,42 @@ exports.updateCoverImage = async (req, res) => {
       return res.status(error.statusCode).json({ message: error.message });
     }
     res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.blockUser = async (req, res) => {
+  try {
+    const result = await userService.blockUser(
+      req.user.userId,
+      req.params.userId,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Đã chặn người dùng",
+      blockedUser: result.blockedUser,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.unblockUser = async (req, res) => {
+  try {
+    await userService.unblockUser(req.user.userId, req.params.userId);
+
+    res.status(200).json({
+      success: true,
+      message: "Đã mở chặn người dùng",
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -280,6 +333,7 @@ exports.acceptFriendRequest = async (req, res) => {
         avatar: req.user.avatar,
       },
       requestId: requestId,
+      conversationId: result.conversationId,
     });
 
     // Cập nhật danh sách bạn bè cho cả 2 users
@@ -291,7 +345,11 @@ exports.acceptFriendRequest = async (req, res) => {
       newFriend: result.receiverInfo,
     });
 
-    res.json({ success: true, friend: result.senderInfo });
+    res.json({
+      success: true,
+      friend: result.senderInfo,
+      conversationId: result.conversationId,
+    });
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ message: error.message });

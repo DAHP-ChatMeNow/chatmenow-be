@@ -12,6 +12,116 @@ const {
 const { formatLastSeen } = require("../../utils/last-seen.helper");
 
 class ChatService {
+  extractMemberUserId(member) {
+    const rawUserId = member?.userId;
+    if (!rawUserId) return null;
+    if (typeof rawUserId === "string") return rawUserId;
+    return String(rawUserId?._id || rawUserId?.id || rawUserId);
+  }
+
+  getPrivatePartnerId(conversation, userId) {
+    if (!conversation || conversation.type !== CONVERSATION_TYPES.PRIVATE) {
+      return null;
+    }
+
+    const partnerMember = (conversation.members || []).find((member) => {
+      const memberUserId = this.extractMemberUserId(member);
+      return !!memberUserId && String(memberUserId) !== String(userId);
+    });
+
+    return partnerMember ? this.extractMemberUserId(partnerMember) : null;
+  }
+
+  buildBlockMeta(blockedByMe, blockedByOther) {
+    return {
+      isBlocked: Boolean(blockedByMe || blockedByOther),
+      blockedByMe: Boolean(blockedByMe),
+      blockedByOther: Boolean(blockedByOther),
+      blockReason: blockedByMe
+        ? "Bạn đã chặn người này"
+        : blockedByOther
+          ? "Người này đã chặn bạn"
+          : null,
+    };
+  }
+
+  async getPrivateConversationBlockMeta(conversation, userId) {
+    const partnerId = this.getPrivatePartnerId(conversation, userId);
+    if (!partnerId) {
+      return this.buildBlockMeta(false, false);
+    }
+
+    const [currentUser, partner] = await Promise.all([
+      User.findById(userId).select("blockedUsers").lean(),
+      User.findById(partnerId).select("blockedUsers").lean(),
+    ]);
+
+    const blockedByMe = (currentUser?.blockedUsers || []).some(
+      (id) => String(id) === String(partnerId),
+    );
+    const blockedByOther = (partner?.blockedUsers || []).some(
+      (id) => String(id) === String(userId),
+    );
+
+    return this.buildBlockMeta(blockedByMe, blockedByOther);
+  }
+
+  async getPrivateConversationBlockMap(conversations, userId) {
+    const privateConversations = (conversations || []).filter(
+      (conversation) => conversation?.type === CONVERSATION_TYPES.PRIVATE,
+    );
+
+    if (!privateConversations.length) {
+      return new Map();
+    }
+
+    const conversationPartnerPairs = privateConversations
+      .map((conversation) => {
+        const conversationId = String(conversation?._id || conversation?.id || "");
+        const partnerId = this.getPrivatePartnerId(conversation, userId);
+
+        if (!conversationId || !partnerId) return null;
+        return { conversationId, partnerId: String(partnerId) };
+      })
+      .filter(Boolean);
+
+    if (!conversationPartnerPairs.length) {
+      return new Map();
+    }
+
+    const uniquePartnerIds = [...new Set(conversationPartnerPairs.map((item) => item.partnerId))];
+    const [currentUser, partners] = await Promise.all([
+      User.findById(userId).select("blockedUsers").lean(),
+      User.find({ _id: { $in: uniquePartnerIds } })
+        .select("_id blockedUsers")
+        .lean(),
+    ]);
+
+    const blockedByMeSet = new Set(
+      (currentUser?.blockedUsers || []).map((id) => String(id)),
+    );
+    const blockedByOtherSet = new Set(
+      (partners || [])
+        .filter((partner) =>
+          (partner?.blockedUsers || []).some((id) => String(id) === String(userId)),
+        )
+        .map((partner) => String(partner._id)),
+    );
+
+    const map = new Map();
+    conversationPartnerPairs.forEach(({ conversationId, partnerId }) => {
+      map.set(
+        conversationId,
+        this.buildBlockMeta(
+          blockedByMeSet.has(partnerId),
+          blockedByOtherSet.has(partnerId),
+        ),
+      );
+    });
+
+    return map;
+  }
+
   getMessagePreviewContent(message) {
     if (message.isUnsent) {
       return "Tin nhắn đã được thu hồi";
@@ -152,7 +262,7 @@ class ChatService {
 
   async ensureConversationMember(conversationId, userId) {
     const conversation = await Conversation.findById(conversationId)
-      .select("_id members.userId")
+      .select("_id type members.userId")
       .lean();
 
     if (!conversation) {
@@ -307,10 +417,46 @@ class ChatService {
       .populate("members.userId", "displayName avatar isOnline lastSeen")
       .populate("lastMessage.senderId", "displayName avatar");
 
+    const aiBotUsers = await User.find({ isAiBot: true }).select("_id").lean();
+    const aiBotIdSet = new Set(aiBotUsers.map((user) => String(user._id)));
+
+    const dedupedConversations = [];
+    let hasIncludedAiConversation = false;
+
+    for (const conversation of conversations) {
+      const isPrivate = conversation?.type === CONVERSATION_TYPES.PRIVATE;
+      const memberIds = (conversation?.members || [])
+        .map((member) => this.extractMemberUserId(member))
+        .filter(Boolean);
+      const hasAiMember = memberIds.some((id) => aiBotIdSet.has(String(id)));
+      const isAiConversation = isPrivate && (conversation?.isAiAssistant || hasAiMember);
+
+      if (isAiConversation) {
+        if (hasIncludedAiConversation) {
+          continue;
+        }
+        hasIncludedAiConversation = true;
+      }
+
+      dedupedConversations.push(conversation);
+    }
+
+    const blockMap = await this.getPrivateConversationBlockMap(
+      dedupedConversations,
+      userId,
+    );
+
     return Promise.all(
-      conversations.map((conversation) =>
-        this.decorateConversationWithUnreadCount(conversation, userId),
-      ),
+      dedupedConversations.map(async (conversation) => {
+        const decorated = await this.decorateConversationWithUnreadCount(
+          conversation,
+          userId,
+        );
+        const conversationId = String(decorated?._id || decorated?.id || "");
+        const blockMeta = blockMap.get(conversationId);
+
+        return blockMeta ? { ...decorated, ...blockMeta } : decorated;
+      }),
     );
   }
 
@@ -370,7 +516,26 @@ class ChatService {
     senderId,
     { conversationId, content, type = MESSAGE_TYPES.TEXT, attachments = [] },
   ) {
-    await this.ensureConversationMember(conversationId, senderId);
+    const conversation = await this.ensureConversationMember(
+      conversationId,
+      senderId,
+    );
+
+    if (conversation.type === CONVERSATION_TYPES.PRIVATE) {
+      const blockMeta = await this.getPrivateConversationBlockMeta(
+        conversation,
+        senderId,
+      );
+
+      if (blockMeta.isBlocked) {
+        throw {
+          statusCode: 403,
+          message: blockMeta.blockedByMe
+            ? "Bạn đã chặn người này. Hãy mở chặn để tiếp tục trò chuyện"
+            : "Bạn không thể nhắn tin vì người này đã chặn bạn",
+        };
+      }
+    }
 
     const normalizedAttachments = this.normalizeAttachments(attachments);
     const resolvedType = this.resolveMessageType(type, normalizedAttachments);
@@ -576,7 +741,20 @@ class ChatService {
       };
     }
 
-    return this.decorateConversationWithUnreadCount(conv, userId);
+    const decorated = await this.decorateConversationWithUnreadCount(
+      conv,
+      userId,
+    );
+
+    if (conv.type !== CONVERSATION_TYPES.PRIVATE) {
+      return decorated;
+    }
+
+    const blockMeta = await this.getPrivateConversationBlockMeta(conv, userId);
+    return {
+      ...decorated,
+      ...blockMeta,
+    };
   }
 
   /**
