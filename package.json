@@ -13,9 +13,11 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.999.0",
     "@aws-sdk/client-s3": "^3.999.0",
     "@aws-sdk/s3-request-presigner": "^3.999.0",
     "bcryptjs": "^3.0.3",
+    "bullmq": "^5.61.2",
     "cloudinary": "^2.8.0",
     "cors": "^2.8.5",
     "datauri": "^4.1.0",
@@ -23,6 +25,7 @@
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "livekit-server-sdk": "^2.15.0",
+    "ioredis": "^5.6.0",
     "mongoose": "^9.0.2",
     "multer": "^2.0.2",
     "socket.io": "^4.8.1"

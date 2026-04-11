@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Conversation = require("../models/conversation.model");
 const Message = require("../models/message.model");
 const User = require("../models/user.model");
@@ -6,6 +7,7 @@ const {
   CONVERSATION_TYPES,
   MESSAGE_TYPES,
   MEMBER_ROLES,
+  NOTIFICATION_TYPES,
 } = require("../../constants");
 const { formatLastSeen } = require("../../utils/last-seen.helper");
 
@@ -174,6 +176,97 @@ class ChatService {
     return conversation;
   }
 
+  getConversationMember(conversation, userId) {
+    return (conversation?.members || []).find(
+      (member) => String(member.userId) === String(userId),
+    );
+  }
+
+  async getConversationUnreadCount(conversationId, userId, conversationDoc) {
+    const conversation =
+      conversationDoc ||
+      (await Conversation.findById(conversationId)
+        .select("_id members.userId members.lastReadAt")
+        .lean());
+
+    if (!conversation) {
+      return 0;
+    }
+
+    const member = this.getConversationMember(conversation, userId);
+    if (!member) {
+      return 0;
+    }
+
+    const query = {
+      conversationId,
+      senderId: { $ne: userId },
+      deletedFor: { $ne: userId },
+    };
+
+    if (member.lastReadAt) {
+      query.createdAt = { $gt: member.lastReadAt };
+    }
+
+    return Message.countDocuments(query);
+  }
+
+  async decorateConversationWithUnreadCount(conversation, userId) {
+    const plainConversation =
+      typeof conversation?.toObject === "function"
+        ? conversation.toObject()
+        : conversation;
+
+    const unreadCount = await this.getConversationUnreadCount(
+      plainConversation?._id || plainConversation?.id,
+      userId,
+      plainConversation,
+    );
+
+    return {
+      ...plainConversation,
+      unreadCount,
+    };
+  }
+
+  async markConversationAsRead(conversationId, userId) {
+    const conversation = await this.ensureConversationMember(
+      conversationId,
+      userId,
+    );
+    const now = new Date();
+    const member = this.getConversationMember(conversation, userId);
+
+    const readQuery = {
+      conversationId,
+      senderId: { $ne: userId },
+      deletedFor: { $ne: userId },
+    };
+
+    if (member?.lastReadAt) {
+      readQuery.createdAt = { $gt: member.lastReadAt };
+    }
+
+    await Promise.all([
+      Message.updateMany(readQuery, { $addToSet: { readBy: userId } }),
+      Conversation.updateOne(
+        { _id: conversationId, "members.userId": userId },
+        {
+          $set: {
+            "members.$.lastReadAt": now,
+            updatedAt: now,
+          },
+        },
+      ),
+    ]);
+
+    return {
+      conversationId,
+      lastReadAt: now,
+      unreadCount: 0,
+    };
+  }
+
   async refreshConversationLastMessage(conversationId) {
     const latestMessage = await Message.findOne({ conversationId })
       .sort({ createdAt: -1, _id: -1 })
@@ -214,7 +307,11 @@ class ChatService {
       .populate("members.userId", "displayName avatar isOnline lastSeen")
       .populate("lastMessage.senderId", "displayName avatar");
 
-    return conversations;
+    return Promise.all(
+      conversations.map((conversation) =>
+        this.decorateConversationWithUnreadCount(conversation, userId),
+      ),
+    );
   }
 
   /**
@@ -289,6 +386,7 @@ class ChatService {
       content: trimmedContent,
       type: resolvedType,
       attachments: normalizedAttachments,
+      readBy: [senderId],
     });
 
     await message.populate("senderId", "displayName avatar");
@@ -465,7 +563,7 @@ class ChatService {
   /**
    * Lấy chi tiết conversation
    */
-  async getConversationDetails(conversationId) {
+  async getConversationDetails(conversationId, userId) {
     const conv = await Conversation.findById(conversationId).populate(
       "members.userId",
       "displayName avatar isOnline",
@@ -478,7 +576,7 @@ class ChatService {
       };
     }
 
-    return conv;
+    return this.decorateConversationWithUnreadCount(conv, userId);
   }
 
   /**
@@ -580,14 +678,14 @@ class ChatService {
       };
     }
 
-    // Kiểm tra user có phải admin không
+    // Kiểm tra user có trong nhóm không
     const userMember = group.members.find(
       (m) => m.userId.toString() === userId,
     );
-    if (!userMember || userMember.role !== MEMBER_ROLES.ADMIN) {
+    if (!userMember) {
       throw {
         statusCode: 403,
-        message: "Chỉ admin mới có thể thêm thành viên",
+        message: "Bạn không phải thành viên của nhóm",
       };
     }
 
@@ -603,25 +701,176 @@ class ChatService {
       };
     }
 
-    for (const memberId of newMembers) {
+    // Admin: thêm trực tiếp như hiện tại
+    if (userMember.role === MEMBER_ROLES.ADMIN) {
+      for (const memberId of newMembers) {
+        group.members.push({ userId: memberId, role: MEMBER_ROLES.MEMBER });
+      }
+
+      const updated = await group.save();
+      await updated.populate("members.userId", "displayName avatar isOnline");
+
+      for (const memberId of newMembers) {
+        await Notification.create({
+          recipientId: memberId,
+          senderId: userId,
+          type: NOTIFICATION_TYPES.GROUP_INVITE,
+          referenced: conversationId,
+          message: `đã mời bạn vào nhóm "${group.name}".`,
+        });
+      }
+
+      return {
+        conversation: updated,
+        requestCreated: false,
+        pendingApproval: false,
+      };
+    }
+
+    // Member thường: tạo yêu cầu để admin duyệt
+    const adminMembers = group.members.filter(
+      (m) => m.role === MEMBER_ROLES.ADMIN && m.userId.toString() !== userId,
+    );
+
+    if (adminMembers.length === 0) {
+      throw {
+        statusCode: 400,
+        message: "Không tìm thấy nhóm trưởng để duyệt yêu cầu",
+      };
+    }
+
+    const requestId = new mongoose.Types.ObjectId().toString();
+
+    await Notification.insertMany(
+      adminMembers.map((admin) => ({
+        recipientId: admin.userId,
+        senderId: userId,
+        type: NOTIFICATION_TYPES.GROUP_MEMBER_REQUEST,
+        referenced: conversationId,
+        message: `đã gửi yêu cầu thêm ${newMembers.length} thành viên vào nhóm "${group.name}".`,
+        metadata: {
+          requestId,
+          conversationId: String(conversationId),
+          memberIds: newMembers,
+          status: "pending",
+        },
+      })),
+    );
+
+    await group.populate("members.userId", "displayName avatar isOnline");
+
+    return {
+      conversation: group,
+      requestCreated: true,
+      pendingApproval: true,
+    };
+  }
+
+  async approveGroupMemberRequest(adminUserId, notificationId) {
+    const requestNotification = await Notification.findOne({
+      _id: notificationId,
+      recipientId: adminUserId,
+      type: NOTIFICATION_TYPES.GROUP_MEMBER_REQUEST,
+    });
+
+    if (!requestNotification) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy yêu cầu thêm thành viên",
+      };
+    }
+
+    const requestMeta = requestNotification.metadata || {};
+    if (requestMeta.status && requestMeta.status !== "pending") {
+      throw {
+        statusCode: 400,
+        message: "Yêu cầu này đã được xử lý",
+      };
+    }
+
+    const targetConversationId =
+      requestMeta.conversationId || String(requestNotification.referenced || "");
+    const requestedMemberIds = Array.isArray(requestMeta.memberIds)
+      ? requestMeta.memberIds.map((id) => String(id))
+      : [];
+
+    if (!targetConversationId || requestedMemberIds.length === 0) {
+      throw {
+        statusCode: 400,
+        message: "Dữ liệu yêu cầu không hợp lệ",
+      };
+    }
+
+    const group = await Conversation.findById(targetConversationId);
+    if (!group || group.type !== CONVERSATION_TYPES.GROUP) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy nhóm",
+      };
+    }
+
+    const adminMember = group.members.find(
+      (m) =>
+        m.userId.toString() === String(adminUserId) &&
+        m.role === MEMBER_ROLES.ADMIN,
+    );
+
+    if (!adminMember) {
+      throw {
+        statusCode: 403,
+        message: "Chỉ admin mới có quyền duyệt",
+      };
+    }
+
+    const membersToAdd = requestedMemberIds.filter(
+      (id) => !group.members.some((m) => m.userId.toString() === id),
+    );
+
+    for (const memberId of membersToAdd) {
       group.members.push({ userId: memberId, role: MEMBER_ROLES.MEMBER });
     }
 
     const updated = await group.save();
     await updated.populate("members.userId", "displayName avatar isOnline");
 
-    // Tạo notification
-    for (const memberId of newMembers) {
-      await Notification.create({
-        recipientId: memberId,
-        senderId: userId,
-        type: "group_invite",
-        referenced: conversationId,
-        message: `đã mời bạn vào nhóm "${group.name}".`,
+    if (membersToAdd.length > 0) {
+      await Notification.insertMany(
+        membersToAdd.map((memberId) => ({
+          recipientId: memberId,
+          senderId: adminUserId,
+          type: NOTIFICATION_TYPES.GROUP_INVITE,
+          referenced: targetConversationId,
+          message: `đã duyệt và thêm bạn vào nhóm "${group.name}".`,
+        })),
+      );
+    }
+
+    if (requestMeta.requestId) {
+      await Notification.updateMany(
+        {
+          type: NOTIFICATION_TYPES.GROUP_MEMBER_REQUEST,
+          "metadata.requestId": requestMeta.requestId,
+        },
+        {
+          $set: {
+            isRead: true,
+            "metadata.status": "approved",
+          },
+        },
+      );
+    } else {
+      await Notification.findByIdAndUpdate(requestNotification._id, {
+        $set: {
+          isRead: true,
+          "metadata.status": "approved",
+        },
       });
     }
 
-    return updated;
+    return {
+      conversation: updated,
+      addedCount: membersToAdd.length,
+    };
   }
 
   /**
@@ -677,6 +926,157 @@ class ChatService {
     group.members = group.members.filter(
       (m) => m.userId.toString() !== memberId,
     );
+    const updated = await group.save();
+    await updated.populate("members.userId", "displayName avatar isOnline");
+
+    return updated;
+  }
+
+  /**
+   * Thành viên tự rời nhóm
+   */
+  async leaveGroup(userId, conversationId) {
+    const group = await Conversation.findById(conversationId);
+    if (!group) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy nhóm",
+      };
+    }
+
+    if (group.type !== CONVERSATION_TYPES.GROUP) {
+      throw {
+        statusCode: 400,
+        message: "Chỉ áp dụng cho nhóm",
+      };
+    }
+
+    const leavingMember = group.members.find(
+      (m) => m.userId.toString() === String(userId),
+    );
+
+    if (!leavingMember) {
+      throw {
+        statusCode: 403,
+        message: "Bạn không phải thành viên của nhóm",
+      };
+    }
+
+    if (leavingMember.role === MEMBER_ROLES.ADMIN) {
+      const adminCount = group.members.filter(
+        (m) => m.role === MEMBER_ROLES.ADMIN,
+      ).length;
+
+      if (adminCount <= 1 && group.members.length > 1) {
+        throw {
+          statusCode: 400,
+          message:
+            "Bạn là nhóm trưởng hiện tại. Vui lòng chuyển quyền admin trước khi rời nhóm",
+        };
+      }
+    }
+
+    group.members = group.members.filter(
+      (m) => m.userId.toString() !== String(userId),
+    );
+
+    if (group.members.length === 0) {
+      await Message.deleteMany({ conversationId });
+      await Conversation.findByIdAndDelete(conversationId);
+
+      return {
+        deleted: true,
+      };
+    }
+
+    const leavingUser = await User.findById(userId).select("displayName");
+    const leavingName = leavingUser?.displayName || "Người dùng";
+    const systemContent = `${leavingName} đã rời khỏi nhóm`;
+
+    const systemMessage = await Message.create({
+      conversationId,
+      senderId: userId,
+      content: systemContent,
+      type: MESSAGE_TYPES.SYSTEM,
+    });
+
+    group.lastMessage = {
+      content: systemContent,
+      senderId: userId,
+      senderName: leavingName,
+      type: MESSAGE_TYPES.SYSTEM,
+      createdAt: systemMessage.createdAt,
+    };
+
+    const updated = await group.save();
+    await updated.populate("members.userId", "displayName avatar isOnline");
+    await systemMessage.populate("senderId", "displayName avatar");
+
+    return {
+      deleted: false,
+      conversation: updated,
+      systemMessage,
+      remainingMemberIds: updated.members.map((member) =>
+        member.userId?._id
+          ? member.userId._id.toString()
+          : member.userId.toString(),
+      ),
+    };
+  }
+
+  /**
+   * Chuyển quyền admin cho một thành viên trong nhóm
+   */
+  async transferGroupAdmin(userId, conversationId, targetUserId) {
+    const group = await Conversation.findById(conversationId);
+    if (!group) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy nhóm",
+      };
+    }
+
+    if (group.type !== CONVERSATION_TYPES.GROUP) {
+      throw {
+        statusCode: 400,
+        message: "Chỉ áp dụng cho nhóm",
+      };
+    }
+
+    const currentAdmin = group.members.find(
+      (m) =>
+        m.userId.toString() === String(userId) &&
+        m.role === MEMBER_ROLES.ADMIN,
+    );
+
+    if (!currentAdmin) {
+      throw {
+        statusCode: 403,
+        message: "Chỉ admin mới có thể chuyển quyền",
+      };
+    }
+
+    const targetMember = group.members.find(
+      (m) => m.userId.toString() === String(targetUserId),
+    );
+
+    if (!targetMember) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy thành viên cần chuyển quyền",
+      };
+    }
+
+    if (targetMember.role === MEMBER_ROLES.ADMIN) {
+      throw {
+        statusCode: 400,
+        message: "Thành viên này đã là admin",
+      };
+    }
+
+    targetMember.role = MEMBER_ROLES.ADMIN;
+    currentAdmin.role = MEMBER_ROLES.MEMBER;
+
     const updated = await group.save();
     await updated.populate("members.userId", "displayName avatar isOnline");
 

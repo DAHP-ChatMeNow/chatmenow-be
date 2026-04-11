@@ -1013,6 +1013,7 @@ class AiService {
       senderSource: "user",
       content: trimmedContent,
       type: "text",
+      readBy: [userId],
     });
     await userMessage.populate("senderId", "displayName avatar");
 
@@ -1064,6 +1065,7 @@ class AiService {
       senderSource: "ai",
       content: aiReplyText,
       type: "text",
+      readBy: [aiBot._id],
     });
     await aiMessage.populate("senderId", "displayName avatar");
 

@@ -1,5 +1,7 @@
 const chatService = require("../service/chat.service");
 const aiService = require("../service/ai.service");
+const aiSummaryService = require("../service/ai-summary.service");
+const { warmupUnreadSummary } = require("../../queues/ai-summary.queue");
 const Conversation = require("../models/conversation.model");
 
 exports.getConversations = async (req, res) => {
@@ -174,6 +176,101 @@ exports.getMessages = async (req, res) => {
   }
 };
 
+exports.getUnreadSummary = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { maxMessages, forceRefresh, messageIds } = req.body || {};
+
+    const result = await aiSummaryService.getUnreadSummary(
+      req.user.userId,
+      conversationId,
+      {
+        maxMessages,
+        forceRefresh,
+        messageIds,
+      },
+    );
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getUnreadSummaryCandidates = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { limit } = req.query;
+
+    const result = await aiSummaryService.getPendingSummaryCandidates(
+      req.user.userId,
+      conversationId,
+      { limit },
+    );
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getUnreadSummaryHistory = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { date } = req.query;
+
+    const result = await aiSummaryService.getSummaryHistory(
+      req.user.userId,
+      conversationId,
+      date,
+    );
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getUnreadSummaryMessages = async (req, res) => {
+  try {
+    const { conversationId, summaryId } = req.params;
+
+    const result = await aiSummaryService.getSummaryMessagesByRecordId(
+      req.user.userId,
+      conversationId,
+      summaryId,
+    );
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.unsendMessage = async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -311,6 +408,29 @@ exports.sendMessage = async (req, res) => {
       io.to(memberId).emit("message:new", message);
     }
 
+    if (memberIds.length > 1) {
+      const recipientIds = memberIds.filter(
+        (memberId) => String(memberId) !== String(senderId),
+      );
+
+      void aiSummaryService.registerPendingMessages({
+        conversationId: message.conversationId,
+        senderId,
+        recipientIds,
+        messageId: message._id,
+        receivedAt: message.createdAt,
+      });
+
+      void Promise.allSettled(
+        recipientIds.map((memberId) =>
+            warmupUnreadSummary({
+              userId: memberId,
+              conversationId: message.conversationId,
+            }),
+          ),
+      );
+    }
+
     res.status(201).json(message);
   } catch (error) {
     if (error.statusCode) {
@@ -336,8 +456,30 @@ exports.createGroupConversation = async (req, res) => {
 
 exports.getConversationDetails = async (req, res) => {
   try {
-    const conv = await chatService.getConversationDetails(req.params.id);
+    const conv = await chatService.getConversationDetails(
+      req.params.id,
+      req.user.userId,
+    );
     res.status(200).json({ success: true, conversation: conv });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.markConversationAsRead = async (req, res) => {
+  try {
+    const result = await chatService.markConversationAsRead(
+      req.params.conversationId,
+      req.user.userId,
+    );
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ message: error.message });
@@ -396,13 +538,41 @@ exports.addMemberToGroup = async (req, res) => {
     const { conversationId } = req.params;
     const { memberIds } = req.body;
 
-    const updated = await chatService.addMemberToGroup(
+    const result = await chatService.addMemberToGroup(
       userId,
       conversationId,
       memberIds,
     );
 
-    res.status(200).json({ success: true, conversation: updated });
+    res.status(200).json({
+      success: true,
+      conversation: result?.conversation || result,
+      requestCreated: Boolean(result?.requestCreated),
+      pendingApproval: Boolean(result?.pendingApproval),
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.approveGroupMemberRequest = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { notificationId } = req.params;
+
+    const result = await chatService.approveGroupMemberRequest(
+      userId,
+      notificationId,
+    );
+
+    res.status(200).json({
+      success: true,
+      conversation: result.conversation,
+      addedCount: result.addedCount,
+    });
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ message: error.message });
@@ -423,6 +593,61 @@ exports.removeMemberFromGroup = async (req, res) => {
     );
 
     res.status(200).json({ success: true, conversation: updated });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.leaveGroup = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { conversationId } = req.params;
+
+    const result = await chatService.leaveGroup(userId, conversationId);
+
+    if (!result?.deleted && result?.systemMessage) {
+      const io = req.app.get("io");
+      io.to(String(conversationId)).emit("newMessage", result.systemMessage);
+      io.to(String(conversationId)).emit("message:new", result.systemMessage);
+
+      for (const memberId of result.remainingMemberIds || []) {
+        io.to(String(memberId)).emit("newMessage", result.systemMessage);
+        io.to(String(memberId)).emit("message:new", result.systemMessage);
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      deleted: Boolean(result?.deleted),
+      conversation: result?.conversation || null,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.transferGroupAdmin = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { conversationId } = req.params;
+    const { targetUserId } = req.body || {};
+
+    const updated = await chatService.transferGroupAdmin(
+      userId,
+      conversationId,
+      targetUserId,
+    );
+
+    res.status(200).json({
+      success: true,
+      conversation: updated,
+    });
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ message: error.message });

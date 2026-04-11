@@ -6,6 +6,7 @@ const routes = require("./api/routes/index");
 const initializeSocket = require("./sockets/socket.handler");
 const { setNotificationIo } = require("./utils/realtime-notification.helper");
 const { apiKeyMiddleware } = require("./api/middleware/apiKeyMiddleware");
+const { startAiSummaryWorker } = require("./workers/ai-summary.worker");
 const cors = require("cors");
 const dotenv = require("dotenv");
 
@@ -53,6 +54,7 @@ app.set("io", io);
 setNotificationIo(io);
 
 initializeSocket(io);
+startAiSummaryWorker();
 
 app.use("/api", apiKeyMiddleware, routes);
 

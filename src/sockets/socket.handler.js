@@ -2,6 +2,7 @@ const Message = require("../api/models/message.model");
 const Conversation = require("../api/models/conversation.model");
 const User = require("../api/models/user.model");
 const aiService = require("../api/service/ai.service");
+const aiSummaryService = require("../api/service/ai-summary.service");
 
 // Presence tracking for multi-device / multi-tab support
 const userSocketsMap = new Map(); // userId -> Set<socketId>
@@ -182,6 +183,7 @@ function initializeSocket(io) {
           senderId: normalizedSenderId,
           content: text,
           type,
+          readBy: [normalizedSenderId],
         });
 
         let savedMessage = await newMessage.save();
@@ -203,6 +205,29 @@ function initializeSocket(io) {
 
         io.to(conversationId).emit("newMessage", savedMessage);
         io.to(conversationId).emit("message:new", savedMessage);
+
+        if (conversationId) {
+          const conversation = await Conversation.findById(conversationId)
+            .select("type members.userId")
+            .lean();
+
+          const recipientIds = (conversation?.members || [])
+            .map((member) => String(member.userId || ""))
+            .filter(
+              (memberId) =>
+                memberId && String(memberId) !== String(normalizedSenderId),
+            );
+
+          if (recipientIds.length > 0 && conversation?.type === "group") {
+            void aiSummaryService.registerPendingMessages({
+              conversationId,
+              senderId: normalizedSenderId,
+              recipientIds,
+              messageId: savedMessage._id,
+              receivedAt: savedMessage.createdAt,
+            });
+          }
+        }
 
         // Do not create notification for direct messages.
       } catch (error) {

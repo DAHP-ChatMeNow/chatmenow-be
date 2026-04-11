@@ -15,6 +15,7 @@ const NotificationSchema = new Schema(
       required: true,
     },
     referenced: { type: Schema.Types.ObjectId },
+    metadata: { type: Schema.Types.Mixed },
 
     message: { type: String },
     isRead: { type: Boolean, default: false },
