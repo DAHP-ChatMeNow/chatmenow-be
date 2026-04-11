@@ -12,13 +12,21 @@ const dotenv = require("dotenv");
 dotenv.config();
 connectDB();
 
-const allowedOrigins = process.env.ALLOWED_ORIGINS
+const defaultMobileOrigins = [
+  "http://localhost",
+  "https://localhost",
+  "capacitor://localhost",
+];
+
+const envAllowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
   : [];
 
+const allowedOrigins = new Set([...defaultMobileOrigins, ...envAllowedOrigins]);
+
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || allowedOrigins.has(origin)) {
       callback(null, true);
     } else {
       callback(new Error(`CORS: origin '${origin}' not allowed`));
@@ -27,6 +35,8 @@ const corsOptions = {
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "x-api-key"],
   credentials: true,
+  optionsSuccessStatus: 204,
+  preflightContinue: false,
 };
 
 const app = express();
