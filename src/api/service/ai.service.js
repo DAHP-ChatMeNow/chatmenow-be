@@ -858,7 +858,7 @@ class AiService {
       ]),
     ].map((id) => new mongoose.Types.ObjectId(id));
 
-    let conversation = await Conversation.findOne({
+    const matchingConversations = await Conversation.find({
       $or: [
         {
           type: CONVERSATION_TYPES.PRIVATE,
@@ -879,7 +879,17 @@ class AiService {
           ],
         },
       ],
-    }).sort({ updatedAt: -1, _id: -1 });
+    }).sort({ isAiAssistant: -1, isPinned: -1, updatedAt: -1, _id: -1 });
+
+    let conversation = matchingConversations[0] || null;
+
+    const canonicalConversation = matchingConversations.find(
+      (item) => item?.isAiAssistant,
+    );
+
+    if (canonicalConversation) {
+      conversation = canonicalConversation;
+    }
 
     if (!conversation) {
       conversation = await Conversation.create({
@@ -908,6 +918,29 @@ class AiService {
         conversation.name = aiConfig.conversationName;
         conversation.isAiAssistant = true;
         await conversation.save();
+      }
+
+      if (matchingConversations.length > 1) {
+        // Keep only one canonical AI conversation visible for each user.
+        const duplicateIds = matchingConversations
+          .filter(
+            (item) =>
+              String(item?._id || "") !== String(conversation?._id || ""),
+          )
+          .map((item) => item?._id)
+          .filter(Boolean);
+
+        if (duplicateIds.length > 0) {
+          await Conversation.updateMany(
+            { _id: { $in: duplicateIds } },
+            {
+              $set: {
+                isPinned: false,
+                isAiAssistant: false,
+              },
+            },
+          );
+        }
       }
     }
 
@@ -1013,6 +1046,7 @@ class AiService {
       senderSource: "user",
       content: trimmedContent,
       type: "text",
+      readBy: [userId],
     });
     await userMessage.populate("senderId", "displayName avatar");
 
@@ -1064,6 +1098,7 @@ class AiService {
       senderSource: "ai",
       content: aiReplyText,
       type: "text",
+      readBy: [aiBot._id],
     });
     await aiMessage.populate("senderId", "displayName avatar");
 

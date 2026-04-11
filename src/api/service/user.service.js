@@ -355,6 +355,85 @@ class UserService {
     };
   }
 
+  async getBlockedUsers(userId) {
+    const user = await User.findById(userId).populate(
+      "blockedUsers",
+      "displayName avatar bio isOnline lastSeen",
+    );
+
+    if (!user) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    return {
+      blockedUsers: (user.blockedUsers || []).map((blockedUser) => ({
+        _id: blockedUser._id,
+        displayName: blockedUser.displayName,
+        avatar: blockedUser.avatar,
+        bio: blockedUser.bio,
+        isOnline: blockedUser.isOnline,
+        lastSeen: blockedUser.lastSeen,
+        lastSeenText: formatLastSeen(blockedUser.lastSeen, blockedUser.isOnline),
+      })),
+      total: (user.blockedUsers || []).length,
+    };
+  }
+
+  async blockUser(userId, blockedUserId) {
+    if (userId === blockedUserId) {
+      throw {
+        statusCode: 400,
+        message: "Không thể chặn chính mình",
+      };
+    }
+
+    const blockedUser = await User.findById(blockedUserId).select(
+      "displayName avatar",
+    );
+    if (!blockedUser) {
+      throw {
+        statusCode: 404,
+        message: "Người dùng không tồn tại",
+      };
+    }
+
+    await User.findByIdAndUpdate(userId, {
+      $addToSet: { blockedUsers: blockedUserId },
+    });
+
+    return {
+      blockedUser: {
+        _id: blockedUser._id,
+        displayName: blockedUser.displayName,
+        avatar: blockedUser.avatar,
+      },
+    };
+  }
+
+  async unblockUser(userId, blockedUserId) {
+    if (userId === blockedUserId) {
+      throw {
+        statusCode: 400,
+        message: "Không thể mở chặn chính mình",
+      };
+    }
+
+    await Promise.all([
+      User.findByIdAndUpdate(userId, {
+        $pull: { blockedUsers: blockedUserId },
+        $addToSet: { friends: blockedUserId },
+      }),
+      User.findByIdAndUpdate(blockedUserId, {
+        $addToSet: { friends: userId },
+      }),
+    ]);
+
+    return { success: true };
+  }
+
   /**
    * Gửi lời mời kết bạn
    */
@@ -366,17 +445,32 @@ class UserService {
       };
     }
 
-    // Kiểm tra người nhận có tồn tại không
-    const receiver = await User.findById(receiverId);
-    if (!receiver) {
+    const [sender, receiver] = await Promise.all([
+      User.findById(senderId).select("friends blockedUsers"),
+      User.findById(receiverId).select("friends blockedUsers"),
+    ]);
+
+    if (!receiver || !sender) {
       throw {
         statusCode: 404,
         message: "Người dùng không tồn tại",
       };
     }
 
-    // Kiểm tra đã là bạn bè chưa
-    const sender = await User.findById(senderId);
+    const senderBlocked = (sender.blockedUsers || []).some(
+      (id) => id.toString() === receiverId,
+    );
+    const receiverBlocked = (receiver.blockedUsers || []).some(
+      (id) => id.toString() === senderId,
+    );
+
+    if (senderBlocked || receiverBlocked) {
+      throw {
+        statusCode: 403,
+        message: "Không thể gửi lời mời cho người dùng đã bị chặn",
+      };
+    }
+
     if (sender.friends.includes(receiverId)) {
       throw {
         statusCode: 400,
@@ -552,7 +646,7 @@ class UserService {
     const receiverId = users[0]._id;
 
     // Kiểm tra đã là bạn bè chưa
-    const sender = await User.findById(senderId);
+    const sender = await User.findById(senderId).select("friends blockedUsers");
     if (sender.friends.includes(receiverId)) {
       throw {
         statusCode: 400,
@@ -572,6 +666,21 @@ class UserService {
         { senderId: receiverId, receiverId: senderId },
       ],
     });
+
+    const receiver = await User.findById(receiverId).select("blockedUsers");
+    const senderBlocked = (sender.blockedUsers || []).some(
+      (id) => id.toString() === receiverId,
+    );
+    const receiverBlocked = (receiver?.blockedUsers || []).some(
+      (id) => id.toString() === senderId,
+    );
+
+    if (senderBlocked || receiverBlocked) {
+      throw {
+        statusCode: 403,
+        message: "Không thể gửi lời mời cho người dùng đã bị chặn",
+      };
+    }
 
     if (existingRequest) {
       // Nếu người kia đã gửi lời mời cho mình (pending)
@@ -802,6 +911,21 @@ class UserService {
 
     const senderId = request.senderId;
 
+    let conversation = await Conversation.findOne({
+      type: CONVERSATION_TYPES.PRIVATE,
+      $and: [
+        { members: { $elemMatch: { userId } } },
+        { members: { $elemMatch: { userId: senderId } } },
+      ],
+    }).select("_id type members updatedAt");
+
+    if (!conversation) {
+      conversation = await Conversation.create({
+        type: CONVERSATION_TYPES.PRIVATE,
+        members: [{ userId }, { userId: senderId }],
+      });
+    }
+
     // Lấy thông tin của cả 2 users
     const [sender, receiver] = await Promise.all([
       User.findById(senderId).select("displayName avatar bio isOnline"),
@@ -834,6 +958,7 @@ class UserService {
       senderId: senderId,
       senderInfo: sender,
       receiverInfo: receiver,
+      conversationId: String(conversation._id),
     };
   }
 
