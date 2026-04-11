@@ -56,10 +56,55 @@ class AuthService {
     return account;
   }
 
-  generateToken(accountId, userId) {
-    return jwt.sign({ accountId, userId }, process.env.JWT_SECRET, {
-      expiresIn: "30d",
-    });
+  generateToken(accountId, userId, sessionId, deviceId) {
+    return jwt.sign(
+      { accountId, userId, sessionId, deviceId },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: "30d",
+      },
+    );
+  }
+
+  async createCurrentSession(accountId, deviceId, deviceName = "") {
+    const sessionId = crypto.randomUUID();
+    const loggedInAt = new Date();
+
+    await Account.updateOne(
+      { _id: accountId },
+      {
+        $set: {
+          currentSession: {
+            sessionId,
+            deviceId,
+            deviceName,
+            loggedInAt,
+          },
+        },
+      },
+    );
+
+    return {
+      sessionId,
+      loggedInAt,
+    };
+  }
+
+  async revokeRememberedLoginsExceptDevice(accountId, deviceId) {
+    if (!deviceId) {
+      return;
+    }
+
+    await Account.updateOne(
+      { _id: accountId },
+      {
+        $pull: {
+          rememberedLogins: {
+            deviceId: { $ne: deviceId },
+          },
+        },
+      },
+    );
   }
 
   generateRememberToken(accountId, userId, deviceId, sessionId) {
@@ -120,7 +165,19 @@ class AuthService {
       avatar: generateDefaultAvatar(displayName),
     });
 
-    const token = this.generateToken(newAccount._id, newUser._id);
+    const defaultDeviceId = `register-${crypto.randomUUID()}`;
+    const session = await this.createCurrentSession(
+      newAccount._id,
+      defaultDeviceId,
+      "register",
+    );
+
+    const token = this.generateToken(
+      newAccount._id,
+      newUser._id,
+      session.sessionId,
+      defaultDeviceId,
+    );
 
     return {
       token,
@@ -135,6 +192,13 @@ class AuthService {
     deviceId,
     deviceName = "",
   }) {
+    if (!deviceId) {
+      throw {
+        statusCode: 400,
+        message: "Thiếu deviceId cho đăng nhập.",
+      };
+    }
+
     const account = await this.getActiveAccountOrThrow(
       await Account.findOne({ email }),
     );
@@ -148,7 +212,19 @@ class AuthService {
     }
 
     const user = await User.findOne({ accountId: account._id });
-    const token = this.generateToken(account._id, user._id);
+    const session = await this.createCurrentSession(
+      account._id,
+      deviceId,
+      deviceName,
+    );
+    await this.revokeRememberedLoginsExceptDevice(account._id, deviceId);
+
+    const token = this.generateToken(
+      account._id,
+      user._id,
+      session.sessionId,
+      deviceId,
+    );
 
     const response = {
       token,
@@ -263,7 +339,19 @@ class AuthService {
       };
     }
 
-    const token = this.generateToken(account._id, user._id);
+    const session = await this.createCurrentSession(
+      account._id,
+      deviceId,
+      rememberedSession.deviceName || "remembered-login",
+    );
+    await this.revokeRememberedLoginsExceptDevice(account._id, deviceId);
+
+    const token = this.generateToken(
+      account._id,
+      user._id,
+      session.sessionId,
+      deviceId,
+    );
 
     await Account.updateOne(
       {

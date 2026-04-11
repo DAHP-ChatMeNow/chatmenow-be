@@ -13,8 +13,14 @@ exports.authMiddleware = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+    if (!decoded.sessionId || !decoded.deviceId) {
+      return res.status(401).json({
+        message: "Phiên đăng nhập đã hết hiệu lực. Vui lòng đăng nhập lại.",
+      });
+    }
+
     const account = await Account.findById(decoded.accountId).select(
-      "accountStatus suspendedUntil isActive",
+      "accountStatus suspendedUntil isActive currentSession",
     );
 
     if (!account) {
@@ -40,9 +46,24 @@ exports.authMiddleware = async (req, res, next) => {
       return res.status(403).json({ message: "Tài khoản đang bị đình chỉ" });
     }
 
+    const activeSession = account.currentSession || {};
+    const isSessionMismatch =
+      !activeSession.sessionId ||
+      activeSession.sessionId !== decoded.sessionId ||
+      activeSession.deviceId !== decoded.deviceId;
+
+    if (isSessionMismatch) {
+      return res.status(401).json({
+        message:
+          "Tài khoản đã đăng nhập trên thiết bị khác. Vui lòng đăng nhập lại.",
+      });
+    }
+
     req.user = {
       accountId: decoded.accountId,
       userId: decoded.userId,
+      sessionId: decoded.sessionId,
+      deviceId: decoded.deviceId,
     };
 
     return next();

@@ -30,6 +30,13 @@ const AccountSchema = new Schema(
       },
     ],
 
+    currentSession: {
+      sessionId: { type: String, default: null },
+      deviceId: { type: String, default: null },
+      deviceName: { type: String, default: "" },
+      loggedInAt: { type: Date, default: null },
+    },
+
     password: { type: String, required: true },
   },
   { timestamps: true },
