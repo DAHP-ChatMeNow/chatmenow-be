@@ -23,6 +23,7 @@ const UserSchema = new Schema(
     lastSeen: { type: Date, default: Date.now },
 
     friends: [{ type: Schema.Types.ObjectId, ref: "User" }],
+    blockedUsers: [{ type: Schema.Types.ObjectId, ref: "User" }],
     isAiBot: { type: Boolean, default: false },
   },
   {
