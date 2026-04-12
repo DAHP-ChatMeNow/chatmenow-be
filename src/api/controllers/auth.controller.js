@@ -1,5 +1,57 @@
 const authService = require("../service/auth.service");
+const otpService = require("../service/otp.service");
+const Account = require("../models/account.model");
 const { verifyTurnstile } = require("../service/turnstile.service");
+
+exports.sendOtp = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: "Vui lòng nhập địa chỉ email." });
+    }
+
+    // Kiểm tra email đã tồn tại chưa
+    const existingAccount = await Account.findOne({ email });
+    if (existingAccount) {
+      return res
+        .status(400)
+        .json({ message: "Email này đã được sử dụng." });
+    }
+
+    const result = await otpService.sendOtp(email);
+
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      expiresIn: result.expiresIn,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.verifyOtp = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    const result = otpService.verifyOtp(email, otp);
+
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      verified: result.verified,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
 
 exports.register = async (req, res) => {
   try {

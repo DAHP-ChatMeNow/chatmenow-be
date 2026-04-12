@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { getSignedUrlFromS3 } = require("../middleware/storage");
 const { generateDefaultAvatar } = require("../../utils/avatar.helper");
+const otpService = require("./otp.service");
 
 class AuthService {
   async buildAvatarViewUrl(avatar) {
@@ -153,6 +154,14 @@ class AuthService {
       };
     }
 
+    // Kiểm tra OTP đã được xác thực chưa
+    if (!otpService.isOtpVerified(email)) {
+      throw {
+        statusCode: 400,
+        message: "Vui lòng xác thực OTP trước khi đăng ký.",
+      };
+    }
+
     const newAccount = await Account.create({
       email,
       password,
@@ -178,6 +187,9 @@ class AuthService {
       session.sessionId,
       defaultDeviceId,
     );
+
+    // Xóa OTP sau khi đăng ký thành công
+    otpService.clearOtp(email);
 
     return {
       token,
