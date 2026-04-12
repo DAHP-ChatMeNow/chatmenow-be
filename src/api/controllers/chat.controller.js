@@ -632,6 +632,29 @@ exports.leaveGroup = async (req, res) => {
   }
 };
 
+exports.updateGroupConversation = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { conversationId } = req.params;
+
+    const updated = await chatService.updateGroupConversation(
+      userId,
+      conversationId,
+      req.body || {},
+    );
+
+    res.status(200).json({
+      success: true,
+      conversation: updated,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.transferGroupAdmin = async (req, res) => {
   try {
     const userId = req.user.userId;
