@@ -9,6 +9,8 @@ const ConversationSchema = new Schema({
   
   name: { type: String }, 
   groupAvatar: { type: String },
+  pinManagementEnabled: { type: Boolean, default: false },
+  joinApprovalEnabled: { type: Boolean, default: false },
 
   members: [{
     userId: { type: Schema.Types.ObjectId, ref: "User" },
@@ -24,7 +26,15 @@ const ConversationSchema = new Schema({
     senderName: { type: String, default: null },
     type: { type: String, default: "text" },
     createdAt: { type: Date, default: null }
-  }
+  },
+
+  pinnedMessages: [
+    {
+      messageId: { type: Schema.Types.ObjectId, ref: "Message", required: true },
+      pinnedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+      pinnedAt: { type: Date, default: Date.now },
+    },
+  ]
 }, { timestamps: true });
 
 

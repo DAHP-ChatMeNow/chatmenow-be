@@ -176,6 +176,86 @@ exports.getMessages = async (req, res) => {
   }
 };
 
+exports.getPinnedMessages = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const result = await chatService.getPinnedMessages(
+      req.user.userId,
+      conversationId,
+    );
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.pinMessage = async (req, res) => {
+  try {
+    const { conversationId, messageId } = req.params;
+    const result = await chatService.pinMessage(
+      req.user.userId,
+      conversationId,
+      messageId,
+    );
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(String(conversationId)).emit("conversation:pinned-updated", {
+        conversationId,
+        latestPinnedMessage: result.latestPinnedMessage,
+        pinnedMessages: result.pinnedMessages,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.unpinMessage = async (req, res) => {
+  try {
+    const { conversationId, messageId } = req.params;
+    const result = await chatService.unpinMessage(
+      req.user.userId,
+      conversationId,
+      messageId,
+    );
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(String(conversationId)).emit("conversation:pinned-updated", {
+        conversationId,
+        latestPinnedMessage: result.latestPinnedMessage,
+        pinnedMessages: result.pinnedMessages,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.getUnreadSummary = async (req, res) => {
   try {
     const { conversationId } = req.params;
@@ -523,6 +603,48 @@ exports.getPrivateConversationPartner = async (req, res) => {
     res.status(200).json({
       success: true,
       partner,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getGroupJoinInfo = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { conversationId } = req.params;
+
+    const info = await chatService.getGroupJoinInfo(userId, conversationId);
+
+    res.status(200).json({
+      success: true,
+      ...info,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.joinGroupByLink = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { conversationId } = req.params;
+
+    const result = await chatService.joinGroupByLink(userId, conversationId);
+
+    res.status(200).json({
+      success: true,
+      conversation: result.conversation || null,
+      joined: Boolean(result.joined),
+      alreadyMember: Boolean(result.alreadyMember),
+      requestCreated: Boolean(result.requestCreated),
+      pendingApproval: Boolean(result.pendingApproval),
     });
   } catch (error) {
     if (error.statusCode) {

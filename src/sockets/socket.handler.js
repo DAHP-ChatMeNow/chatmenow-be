@@ -1,6 +1,7 @@
 const Message = require("../api/models/message.model");
 const Conversation = require("../api/models/conversation.model");
 const User = require("../api/models/user.model");
+const mongoose = require("mongoose");
 const aiService = require("../api/service/ai.service");
 const aiSummaryService = require("../api/service/ai-summary.service");
 
@@ -145,6 +146,7 @@ function initializeSocket(io) {
           senderId,
           type = "text",
           receiverId,
+          replyToMessageId,
         } = data;
 
         const normalizedSenderId = socket.data.userId || senderId;
@@ -178,11 +180,45 @@ function initializeSocket(io) {
         const sender =
           await User.findById(normalizedSenderId).select("displayName avatar");
 
+        let resolvedReplyToMessageId = null;
+        if (replyToMessageId != null && String(replyToMessageId).trim()) {
+          const normalizedReplyId = String(replyToMessageId).trim();
+
+          if (!mongoose.Types.ObjectId.isValid(normalizedReplyId)) {
+            socket.emit("error", { message: "replyToMessageId không hợp lệ" });
+            return;
+          }
+
+          const replyTarget = await Message.findById(normalizedReplyId)
+            .select("_id conversationId isUnsent")
+            .lean();
+
+          if (
+            !replyTarget ||
+            String(replyTarget.conversationId) !== String(conversationId)
+          ) {
+            socket.emit("error", {
+              message: "Tin nhắn được trả lời không hợp lệ",
+            });
+            return;
+          }
+
+          if (replyTarget.isUnsent) {
+            socket.emit("error", {
+              message: "Không thể trả lời tin nhắn đã được thu hồi",
+            });
+            return;
+          }
+
+          resolvedReplyToMessageId = normalizedReplyId;
+        }
+
         const newMessage = new Message({
           conversationId,
           senderId: normalizedSenderId,
           content: text,
           type,
+          replyToMessageId: resolvedReplyToMessageId,
           readBy: [normalizedSenderId],
         });
 
