@@ -37,6 +37,20 @@ const MessageSchema = new Schema(
       default: null,
     },
 
+    replyPreview: {
+      content: { type: String, default: "" },
+      type: { type: String, default: "text" },
+      attachments: [
+        {
+          url: String,
+          fileType: String,
+          fileName: String,
+          fileSize: Number,
+        },
+      ],
+      senderDisplayName: { type: String, default: "" },
+    },
+
     // Optional metadata for call-history system messages.
     callInfo: {
       callId: { type: Schema.Types.ObjectId, ref: "VideoCall", default: null },

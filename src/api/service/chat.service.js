@@ -260,9 +260,150 @@ class ChatService {
     return trimmedContent;
   }
 
+  normalizeReplyToMessageId(replyToMessageId) {
+    if (replyToMessageId == null) {
+      return null;
+    }
+
+    const normalizedReplyId = String(replyToMessageId).trim();
+    if (!normalizedReplyId) {
+      return null;
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(normalizedReplyId)) {
+      throw {
+        statusCode: 400,
+        message: "replyToMessageId không hợp lệ",
+      };
+    }
+
+    return normalizedReplyId;
+  }
+
+  async resolveReplyTarget(conversationId, replyToMessageId) {
+    const normalizedReplyId = this.normalizeReplyToMessageId(replyToMessageId);
+    if (!normalizedReplyId) {
+      return {
+        replyToMessageId: null,
+        replyPreview: null,
+      };
+    }
+
+    const replyTarget = await Message.findById(normalizedReplyId)
+      .select("_id conversationId isUnsent content type attachments senderId")
+      .populate("senderId", "displayName")
+      .lean();
+
+    if (!replyTarget || String(replyTarget.conversationId) !== String(conversationId)) {
+      throw {
+        statusCode: 400,
+        message: "Tin nhắn được trả lời không hợp lệ",
+      };
+    }
+
+    if (replyTarget.isUnsent) {
+      throw {
+        statusCode: 400,
+        message: "Không thể trả lời tin nhắn đã được thu hồi",
+      };
+    }
+
+    return {
+      replyToMessageId: normalizedReplyId,
+      replyPreview: {
+        content: String(replyTarget.content || ""),
+        type: String(replyTarget.type || MESSAGE_TYPES.TEXT),
+        attachments: Array.isArray(replyTarget.attachments)
+          ? replyTarget.attachments
+          : [],
+        senderDisplayName: String(replyTarget.senderId?.displayName || ""),
+      },
+    };
+  }
+
+  normalizeMessageId(messageId, fieldName = "messageId") {
+    const normalized = String(messageId || "").trim();
+    if (!normalized || !mongoose.Types.ObjectId.isValid(normalized)) {
+      throw {
+        statusCode: 400,
+        message: `${fieldName} không hợp lệ`,
+      };
+    }
+
+    return normalized;
+  }
+
+  async buildPinnedMessagesPayload(conversationId, userId) {
+    const conversation = await this.ensureConversationMember(conversationId, userId);
+    const pinnedEntries = Array.isArray(conversation.pinnedMessages)
+      ? [...conversation.pinnedMessages]
+      : [];
+
+    if (pinnedEntries.length === 0) {
+      return {
+        pinnedMessages: [],
+        latestPinnedMessage: null,
+      };
+    }
+
+    const sortedEntries = pinnedEntries.sort(
+      (left, right) =>
+        new Date(right?.pinnedAt || 0).getTime() -
+        new Date(left?.pinnedAt || 0).getTime(),
+    );
+
+    const messageIds = sortedEntries
+      .map((entry) => String(entry?.messageId || ""))
+      .filter(Boolean);
+
+    if (messageIds.length === 0) {
+      return {
+        pinnedMessages: [],
+        latestPinnedMessage: null,
+      };
+    }
+
+    const pinnedMessages = await Message.find({
+      _id: { $in: messageIds },
+      conversationId,
+      deletedFor: { $ne: userId },
+      isUnsent: { $ne: true },
+    })
+      .populate("senderId", "displayName avatar")
+      .lean();
+
+    const messageMap = new Map(
+      pinnedMessages.map((message) => [String(message._id), message]),
+    );
+
+    const normalizedPinnedMessages = sortedEntries
+      .map((entry) => {
+        const messageId = String(entry?.messageId || "");
+        const message = messageMap.get(messageId);
+        if (!message) {
+          return null;
+        }
+
+        return {
+          messageId,
+          pinnedAt: entry?.pinnedAt || null,
+          pinnedBy: entry?.pinnedBy || null,
+          message,
+        };
+      })
+      .filter(Boolean);
+
+    return {
+      pinnedMessages: normalizedPinnedMessages,
+      latestPinnedMessage: normalizedPinnedMessages[0]?.message || null,
+    };
+  }
+
   async ensureConversationMember(conversationId, userId) {
     const conversation = await Conversation.findById(conversationId)
-      .select("_id type members.userId")
+      .select(
+        "_id type pinManagementEnabled pinnedMessages members.userId members.role members.lastReadAt",
+      )
       .lean();
 
     if (!conversation) {
@@ -284,6 +425,25 @@ class ChatService {
     }
 
     return conversation;
+  }
+
+  ensureCanManagePinnedMessages(conversation, userId) {
+    if (!conversation || conversation.type !== CONVERSATION_TYPES.GROUP) {
+      return;
+    }
+
+    // Group pin-management is optional: off => every member can pin/unpin.
+    if (!conversation.pinManagementEnabled) {
+      return;
+    }
+
+    const member = this.getConversationMember(conversation, userId);
+    if (!member || member.role !== MEMBER_ROLES.ADMIN) {
+      throw {
+        statusCode: 403,
+        message: "Nhóm đang bật quản lý ghim: chỉ admin mới có thể ghim hoặc bỏ ghim tin nhắn",
+      };
+    }
   }
 
   getConversationMember(conversation, userId) {
@@ -493,7 +653,15 @@ class ChatService {
     const messages = await Message.find(query)
       .sort({ createdAt: -1, _id: -1 })
       .limit(safeLimit + 1)
-      .populate("senderId", "displayName avatar");
+      .populate("senderId", "displayName avatar")
+      .populate({
+        path: "replyToMessageId",
+        select: "content type attachments isUnsent unsentAt senderId",
+        populate: {
+          path: "senderId",
+          select: "displayName avatar",
+        },
+      });
 
     const hasMore = messages.length > safeLimit;
     const pagedMessages = hasMore ? messages.slice(0, safeLimit) : messages;
@@ -514,7 +682,13 @@ class ChatService {
    */
   async sendMessage(
     senderId,
-    { conversationId, content, type = MESSAGE_TYPES.TEXT, attachments = [] },
+    {
+      conversationId,
+      content,
+      type = MESSAGE_TYPES.TEXT,
+      attachments = [],
+      replyToMessageId = null,
+    },
   ) {
     const conversation = await this.ensureConversationMember(
       conversationId,
@@ -544,6 +718,20 @@ class ChatService {
       type: resolvedType,
       attachments: normalizedAttachments,
     });
+    const resolvedReplyTarget = await this.resolveReplyTarget(
+      conversationId,
+      replyToMessageId,
+    );
+
+    const safeReplyToMessageId =
+      typeof resolvedReplyTarget === "object" && resolvedReplyTarget !== null
+        ? resolvedReplyTarget.replyToMessageId
+        : resolvedReplyTarget;
+        
+    const safeReplyPreview = 
+      typeof resolvedReplyTarget === "object" && resolvedReplyTarget !== null
+        ? resolvedReplyTarget.replyPreview
+        : null;
 
     const message = await Message.create({
       conversationId,
@@ -551,10 +739,20 @@ class ChatService {
       content: trimmedContent,
       type: resolvedType,
       attachments: normalizedAttachments,
+      replyToMessageId: safeReplyToMessageId,
+      replyPreview: safeReplyPreview,
       readBy: [senderId],
     });
 
     await message.populate("senderId", "displayName avatar");
+    await message.populate({
+      path: "replyToMessageId",
+      select: "content type attachments isUnsent unsentAt senderId",
+      populate: {
+        path: "senderId",
+        select: "displayName avatar",
+      },
+    });
 
     await Conversation.findByIdAndUpdate(conversationId, {
       lastMessage: {
@@ -608,10 +806,21 @@ class ChatService {
     message.content = "Tin nhắn đã được thu hồi";
     message.attachments = [];
     message.replyToMessageId = null;
+    message.replyPreview = null;
     message.isEdited = false;
     message.editedAt = null;
 
     await message.save();
+    await Conversation.updateOne(
+      { _id: message.conversationId },
+      {
+        $pull: {
+          pinnedMessages: {
+            messageId: message._id,
+          },
+        },
+      },
+    );
     await message.populate("senderId", "displayName avatar");
     await this.refreshConversationLastMessage(message.conversationId);
 
@@ -699,6 +908,83 @@ class ChatService {
     return message;
   }
 
+  async pinMessage(userId, conversationId, messageId) {
+    const normalizedMessageId = this.normalizeMessageId(messageId);
+    const conversation = await this.ensureConversationMember(conversationId, userId);
+    this.ensureCanManagePinnedMessages(conversation, userId);
+
+    const targetMessage = await Message.findOne({
+      _id: normalizedMessageId,
+      conversationId,
+      deletedFor: { $ne: userId },
+    })
+      .select("_id isUnsent")
+      .lean();
+
+    if (!targetMessage) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy tin nhắn để ghim",
+      };
+    }
+
+    if (targetMessage.isUnsent) {
+      throw {
+        statusCode: 400,
+        message: "Không thể ghim tin nhắn đã thu hồi",
+      };
+    }
+
+    await Conversation.updateOne(
+      { _id: conversationId },
+      {
+        $pull: {
+          pinnedMessages: {
+            messageId: normalizedMessageId,
+          },
+        },
+      },
+    );
+
+    await Conversation.updateOne(
+      { _id: conversationId },
+      {
+        $push: {
+          pinnedMessages: {
+            messageId: normalizedMessageId,
+            pinnedBy: userId,
+            pinnedAt: new Date(),
+          },
+        },
+      },
+    );
+
+    return this.buildPinnedMessagesPayload(conversationId, userId);
+  }
+
+  async unpinMessage(userId, conversationId, messageId) {
+    const normalizedMessageId = this.normalizeMessageId(messageId);
+    const conversation = await this.ensureConversationMember(conversationId, userId);
+    this.ensureCanManagePinnedMessages(conversation, userId);
+
+    await Conversation.updateOne(
+      { _id: conversationId },
+      {
+        $pull: {
+          pinnedMessages: {
+            messageId: normalizedMessageId,
+          },
+        },
+      },
+    );
+
+    return this.buildPinnedMessagesPayload(conversationId, userId);
+  }
+
+  async getPinnedMessages(userId, conversationId) {
+    return this.buildPinnedMessagesPayload(conversationId, userId);
+  }
+
   /**
    * Tạo nhóm chat
    */
@@ -728,7 +1014,11 @@ class ChatService {
   /**
    * Cập nhật thông tin nhóm
    */
-  async updateGroupConversation(userId, conversationId, { name, groupAvatar } = {}) {
+  async updateGroupConversation(
+    userId,
+    conversationId,
+    { name, groupAvatar, pinManagementEnabled, joinApprovalEnabled } = {},
+  ) {
     const group = await Conversation.findById(conversationId);
     if (!group) {
       throw {
@@ -767,6 +1057,14 @@ class ChatService {
       group.groupAvatar = groupAvatar.trim();
     }
 
+    if (typeof pinManagementEnabled === "boolean") {
+      group.pinManagementEnabled = pinManagementEnabled;
+    }
+
+    if (typeof joinApprovalEnabled === "boolean") {
+      group.joinApprovalEnabled = joinApprovalEnabled;
+    }
+
     const updated = await group.save();
     await updated.populate("members.userId", "displayName avatar isOnline");
 
@@ -789,6 +1087,17 @@ class ChatService {
       };
     }
 
+    const isMember = (conv.members || []).some(
+      (member) => String(member?.userId?._id || member?.userId) === String(userId),
+    );
+
+    if (!isMember) {
+      throw {
+        statusCode: 403,
+        message: "Bạn chưa tham gia nhóm này",
+      };
+    }
+
     const decorated = await this.decorateConversationWithUnreadCount(
       conv,
       userId,
@@ -802,6 +1111,150 @@ class ChatService {
     return {
       ...decorated,
       ...blockMeta,
+    };
+  }
+
+  async getGroupJoinInfo(userId, conversationId) {
+    const conversation = await Conversation.findById(conversationId)
+      .select("_id type name groupAvatar joinApprovalEnabled members.userId")
+      .lean();
+
+    if (!conversation) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy nhóm",
+      };
+    }
+
+    if (conversation.type !== CONVERSATION_TYPES.GROUP) {
+      throw {
+        statusCode: 400,
+        message: "Liên kết này không phải nhóm",
+      };
+    }
+
+    const isMember = (conversation.members || []).some(
+      (member) => String(member?.userId) === String(userId),
+    );
+
+    return {
+      conversationId: String(conversation._id),
+      name: conversation.name || "Nhóm chat",
+      groupAvatar: conversation.groupAvatar || "",
+      memberCount: Array.isArray(conversation.members)
+        ? conversation.members.length
+        : 0,
+      isMember,
+      joinApprovalEnabled: Boolean(conversation.joinApprovalEnabled),
+    };
+  }
+
+  async joinGroupByLink(userId, conversationId) {
+    const group = await Conversation.findById(conversationId);
+
+    if (!group) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy nhóm",
+      };
+    }
+
+    if (group.type !== CONVERSATION_TYPES.GROUP) {
+      throw {
+        statusCode: 400,
+        message: "Liên kết này không phải nhóm",
+      };
+    }
+
+    const alreadyMember = (group.members || []).some(
+      (member) => String(member.userId) === String(userId),
+    );
+
+    if (alreadyMember) {
+      await group.populate("members.userId", "displayName avatar isOnline");
+
+      return {
+        conversation: group,
+        joined: false,
+        alreadyMember: true,
+        requestCreated: false,
+        pendingApproval: false,
+      };
+    }
+
+    if (group.joinApprovalEnabled) {
+      const adminIds = (group.members || [])
+        .filter((member) => member.role === MEMBER_ROLES.ADMIN)
+        .map((member) => String(member.userId))
+        .filter(Boolean);
+
+      if (adminIds.length === 0) {
+        throw {
+          statusCode: 400,
+          message: "Không tìm thấy admin để duyệt yêu cầu tham gia",
+        };
+      }
+
+      const existingPendingRequest = await Notification.findOne({
+        senderId: userId,
+        type: NOTIFICATION_TYPES.GROUP_MEMBER_REQUEST,
+        referenced: conversationId,
+        "metadata.requestType": "join_group",
+        "metadata.status": "pending",
+      }).lean();
+
+      if (existingPendingRequest) {
+        return {
+          conversation: null,
+          joined: false,
+          alreadyMember: false,
+          requestCreated: true,
+          pendingApproval: true,
+        };
+      }
+
+      const requestId = new mongoose.Types.ObjectId().toString();
+
+      await Notification.insertMany(
+        adminIds.map((adminId) => ({
+          recipientId: adminId,
+          senderId: userId,
+          type: NOTIFICATION_TYPES.GROUP_MEMBER_REQUEST,
+          referenced: conversationId,
+          message: `đã gửi yêu cầu tham gia nhóm "${group.name}".`,
+          metadata: {
+            requestId,
+            requestType: "join_group",
+            conversationId: String(conversationId),
+            memberIds: [String(userId)],
+            status: "pending",
+          },
+        })),
+      );
+
+      return {
+        conversation: null,
+        joined: false,
+        alreadyMember: false,
+        requestCreated: true,
+        pendingApproval: true,
+      };
+    }
+
+    group.members.push({
+      userId,
+      role: MEMBER_ROLES.MEMBER,
+    });
+    await group.save();
+
+    await group.populate("members.userId", "displayName avatar isOnline");
+
+    return {
+      conversation: group,
+      joined: true,
+      alreadyMember: false,
+      requestCreated: false,
+      pendingApproval: false,
     };
   }
 

@@ -62,9 +62,39 @@ router.get(
 );
 
 router.get(
+  "/conversations/:conversationId/join-info",
+  verifyToken,
+  chatController.getGroupJoinInfo,
+);
+
+router.post(
+  "/conversations/:conversationId/join",
+  verifyToken,
+  chatController.joinGroupByLink,
+);
+
+router.get(
   "/conversations/:conversationId/messages",
   verifyToken,
   chatController.getMessages,
+);
+
+router.get(
+  "/conversations/:conversationId/pinned-messages",
+  verifyToken,
+  chatController.getPinnedMessages,
+);
+
+router.post(
+  "/conversations/:conversationId/pinned-messages/:messageId",
+  verifyToken,
+  chatController.pinMessage,
+);
+
+router.delete(
+  "/conversations/:conversationId/pinned-messages/:messageId",
+  verifyToken,
+  chatController.unpinMessage,
 );
 
 router.patch(
