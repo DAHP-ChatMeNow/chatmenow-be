@@ -726,6 +726,54 @@ class ChatService {
   }
 
   /**
+   * Cập nhật thông tin nhóm
+   */
+  async updateGroupConversation(userId, conversationId, { name, groupAvatar } = {}) {
+    const group = await Conversation.findById(conversationId);
+    if (!group) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy nhóm",
+      };
+    }
+
+    if (group.type !== CONVERSATION_TYPES.GROUP) {
+      throw {
+        statusCode: 400,
+        message: "Chỉ áp dụng cho nhóm",
+      };
+    }
+
+    const currentAdmin = group.members.find(
+      (m) =>
+        m.userId.toString() === String(userId) &&
+        m.role === MEMBER_ROLES.ADMIN,
+    );
+
+    if (!currentAdmin) {
+      throw {
+        statusCode: 403,
+        message: "Chỉ admin mới có thể cập nhật thông tin nhóm",
+      };
+    }
+
+    const trimmedName = typeof name === "string" ? name.trim() : "";
+
+    if (trimmedName) {
+      group.name = trimmedName;
+    }
+
+    if (typeof groupAvatar === "string") {
+      group.groupAvatar = groupAvatar.trim();
+    }
+
+    const updated = await group.save();
+    await updated.populate("members.userId", "displayName avatar isOnline");
+
+    return updated;
+  }
+
+  /**
    * Lấy chi tiết conversation
    */
   async getConversationDetails(conversationId, userId) {
@@ -1141,17 +1189,11 @@ class ChatService {
     }
 
     if (leavingMember.role === MEMBER_ROLES.ADMIN) {
-      const adminCount = group.members.filter(
-        (m) => m.role === MEMBER_ROLES.ADMIN,
-      ).length;
-
-      if (adminCount <= 1 && group.members.length > 1) {
-        throw {
-          statusCode: 400,
-          message:
-            "Bạn là nhóm trưởng hiện tại. Vui lòng chuyển quyền admin trước khi rời nhóm",
-        };
-      }
+      throw {
+        statusCode: 400,
+        message:
+          "Bạn đang là admin nhóm nên không thể rời nhóm. Hãy chuyển quyền admin trước.",
+      };
     }
 
     group.members = group.members.filter(

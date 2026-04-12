@@ -134,6 +134,12 @@ router.post(
   chatController.leaveGroup,
 );
 
+router.patch(
+  "/conversations/:conversationId",
+  verifyToken,
+  chatController.updateGroupConversation,
+);
+
 router.post(
   "/conversations/:conversationId/transfer-admin",
   verifyToken,
