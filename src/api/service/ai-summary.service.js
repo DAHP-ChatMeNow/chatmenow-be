@@ -418,6 +418,56 @@ class AiSummaryService {
     return Number((inputCost + outputCost).toFixed(6));
   }
 
+  normalizeOverviewText(text, maxChars = 650) {
+    let value = String(text || "").trim();
+
+    if (!value) {
+      return "DanhAI chưa phân tích được tóm tắt.";
+    }
+
+    // Remove markdown wrappers if model accidentally returns them.
+    value = value
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/```$/i, "")
+      .trim();
+
+    // If response is malformed JSON-like text, try to pull only overview content.
+    const overviewKeyMatch = value.match(/"overview"\s*:\s*"([\s\S]*)/i);
+    if (overviewKeyMatch && overviewKeyMatch[1]) {
+      value = overviewKeyMatch[1]
+        .replace(/"\s*}\s*$/g, "")
+        .replace(/\"/g, '"')
+        .trim();
+    }
+
+    // Clean leftover braces/quotes from truncated JSON.
+    value = value
+      .replace(/^[{\[]+/, "")
+      .replace(/[}\]]+$/g, "")
+      .replace(/^"+|"+$/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (value.length <= maxChars) {
+      return value || "DanhAI chưa phân tích được tóm tắt.";
+    }
+
+    // Prefer cutting at sentence boundary, then at word boundary.
+    const soft = value.slice(0, maxChars);
+    const sentenceCut = Math.max(soft.lastIndexOf("."), soft.lastIndexOf("!"), soft.lastIndexOf("?"));
+    if (sentenceCut >= 120) {
+      return `${soft.slice(0, sentenceCut + 1).trim()} ...`;
+    }
+
+    const wordCut = soft.lastIndexOf(" ");
+    if (wordCut >= 120) {
+      return `${soft.slice(0, wordCut).trim()} ...`;
+    }
+
+    return `${soft.trim()} ...`;
+  }
+
   safeParseSummary(text, requestId = "unknown") {
     const raw = String(text || "").trim();
     console.log(`[AiSummary][${requestId}] safeParseSummary input length: ${raw.length}`);
@@ -441,7 +491,7 @@ class AiSummaryService {
           const parsed = JSON.parse(jsonMatch[0]);
           console.log(`[AiSummary][${requestId}] ✅ Repair attempt 1 SUCCESS`);
           return {
-            overview: String(parsed?.overview || "").slice(0, 300),
+            overview: this.normalizeOverviewText(parsed?.overview),
           };
         } catch (e2) {
           console.warn(`[AiSummary][${requestId}] Repair attempt 1 failed: ${e2.message}`);
@@ -460,7 +510,7 @@ class AiSummaryService {
         const parsed = JSON.parse(fixedJson);
         console.log(`[AiSummary][${requestId}] ✅ Repair attempt 2 SUCCESS`);
         return {
-          overview: String(parsed?.overview || "").slice(0, 300),
+          overview: this.normalizeOverviewText(parsed?.overview),
         };
       } catch (e3) {
         console.warn(`[AiSummary][${requestId}] Repair attempt 2 failed: ${e3.message}`);
@@ -490,7 +540,7 @@ class AiSummaryService {
     try {
       const parsed = JSON.parse(candidate);
       return {
-        overview: String(parsed?.overview || "").slice(0, 300),
+        overview: this.normalizeOverviewText(parsed?.overview),
       };
     } catch (err) {
       console.error("[AiSummary] JSON.parse error:", err.message);
@@ -501,7 +551,7 @@ class AiSummaryService {
 
   parseTextFallbackSummary(text) {
     const raw = String(text || "").trim();
-    const overview = raw.slice(0, 300) || "DanhAI chưa phân tích được tóm tắt.";
+    const overview = this.normalizeOverviewText(raw);
 
     return {
       overview,
@@ -624,7 +674,7 @@ class AiSummaryService {
       '{"overview":"..."}',
       "",
       "REQUIREMENTS:",
-      "- overview: Tiếng Việt, ngắn gọn <= 300 ký tự",
+      "- overview: Tiếng Việt, ngắn gọn <= 650 ký tự",
       "- Chỉ tóm tắt ý chính từ dữ liệu được cung cấp",
       "- Không bịa thêm thông tin",
       "",
