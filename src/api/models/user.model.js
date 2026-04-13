@@ -32,6 +32,40 @@ const UserSchema = new Schema(
     friends: [{ type: Schema.Types.ObjectId, ref: "User" }],
     blockedUsers: [{ type: Schema.Types.ObjectId, ref: "User" }],
     isAiBot: { type: Boolean, default: false },
+    searchHistory: [
+      {
+        keyword: { type: String, default: "" },
+        hometown: { type: String, default: "" },
+        school: { type: String, default: "" },
+        lastSearchedAt: { type: Date, default: Date.now },
+      },
+    ],
+    profileVisitHistory: [
+      {
+        userId: { type: Schema.Types.ObjectId, ref: "User" },
+        visitedAt: { type: Date, default: Date.now },
+      },
+    ],
+    likeHistory: [
+      {
+        postId: { type: Schema.Types.ObjectId, ref: "Post" },
+        likedAt: { type: Date, default: Date.now },
+      },
+    ],
+    commentHistory: [
+      {
+        postId: { type: Schema.Types.ObjectId, ref: "Post" },
+        commentId: { type: Schema.Types.ObjectId, ref: "Comment" },
+        commentedAt: { type: Date, default: Date.now },
+      },
+    ],
+    videoViewHistory: [
+      {
+        sourceType: { type: String, enum: ["story", "post"], default: "story" },
+        sourceId: { type: Schema.Types.ObjectId, required: true },
+        viewedAt: { type: Date, default: Date.now },
+      },
+    ],
   },
   {
     timestamps: true,

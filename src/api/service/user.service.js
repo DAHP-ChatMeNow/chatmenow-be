@@ -4,6 +4,10 @@ const Notification = require("../models/notification.model");
 const Account = require("../models/account.model");
 const Conversation = require("../models/conversation.model");
 const Message = require("../models/message.model");
+const Post = require("../models/post.model");
+const Comment = require("../models/comment.model");
+const Story = require("../models/story.model");
+const { getSignedUrlFromS3 } = require("../middleware/storage");
 const { formatLastSeen } = require("../../utils/last-seen.helper");
 const {
   emitNotificationToUser,
@@ -14,6 +18,204 @@ const {
 } = require("../../constants");
 
 class UserService {
+  normalizeString(value) {
+    return String(value || "").trim();
+  }
+
+  normalizeSearchHistoryLimit(limit) {
+    const parsed = parseInt(limit, 10);
+    if (!Number.isFinite(parsed)) return 20;
+    return Math.min(Math.max(parsed, 1), 50);
+  }
+
+  normalizeActivityLimit(limit) {
+    const parsed = parseInt(limit, 10);
+    if (!Number.isFinite(parsed)) return 20;
+    return Math.min(Math.max(parsed, 1), 100);
+  }
+
+  async resolvePostMediaUrls(mediaArray = []) {
+    if (!Array.isArray(mediaArray) || mediaArray.length === 0) {
+      return [];
+    }
+
+    return await Promise.all(
+      mediaArray.map(async (item) => {
+        if (!item?.url || String(item.url).startsWith("http")) {
+          return item;
+        }
+
+        try {
+          const signedUrl = await getSignedUrlFromS3(item.url);
+          return { ...item, url: signedUrl };
+        } catch {
+          return item;
+        }
+      }),
+    );
+  }
+
+  extractReferencedPostId(post = null) {
+    const raw = post?.sharedPost?.postId;
+    if (!raw) return null;
+    if (typeof raw === "string") return raw;
+    return String(raw?._id || raw?.id || raw);
+  }
+
+  async resolveOriginalPostId(post = null) {
+    if (!post) return null;
+
+    let currentId =
+      typeof post === "string" ? String(post) : String(post?._id || "");
+    let currentDoc = typeof post === "object" ? post : null;
+    const visited = new Set();
+
+    for (let i = 0; i < 10; i += 1) {
+      if (!currentId || visited.has(currentId)) break;
+      visited.add(currentId);
+
+      if (!currentDoc) {
+        currentDoc = await Post.findById(currentId)
+          .select("_id sharedPost.postId isDeleted")
+          .lean();
+      }
+
+      if (!currentDoc || currentDoc.isDeleted) {
+        break;
+      }
+
+      const nextId = this.extractReferencedPostId(currentDoc);
+      if (!nextId || visited.has(String(nextId))) {
+        return String(currentDoc._id);
+      }
+
+      currentId = String(nextId);
+      currentDoc = null;
+    }
+
+    return currentId || null;
+  }
+
+  canViewerAccessPost(post, viewerId, viewerFriendIdSet = new Set()) {
+    if (!post || post.isDeleted) return false;
+
+    const authorId =
+      typeof post.authorId === "object"
+        ? String(post.authorId?._id || post.authorId)
+        : String(post.authorId);
+    const normalizedViewerId = String(viewerId);
+
+    if (authorId === normalizedViewerId) return true;
+    if (post.privacy === "public") return true;
+
+    if (post.privacy === "friends") {
+      return viewerFriendIdSet.has(authorId);
+    }
+
+    if (post.privacy === "custom") {
+      return (post.customAudienceIds || []).some(
+        (id) => String(id) === normalizedViewerId,
+      );
+    }
+
+    return false;
+  }
+
+  async getViewerFriendIdSet(viewerId) {
+    const viewer = await User.findById(viewerId).select("friends").lean();
+    if (!viewer) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    return new Set((viewer.friends || []).map((id) => String(id)));
+  }
+
+  normalizeSearchFilters(filters = {}) {
+    const keyword = this.normalizeString(filters.keyword || filters.q || filters.query);
+    const hometown = this.normalizeString(filters.city || filters.hometown);
+    const school = this.normalizeString(filters.school);
+
+    return {
+      keyword,
+      hometown,
+      school,
+      keywordLower: keyword.toLowerCase(),
+      hometownLower: hometown.toLowerCase(),
+      schoolLower: school.toLowerCase(),
+    };
+  }
+
+  async saveSearchHistory(userId, filters = {}) {
+    const normalized = this.normalizeSearchFilters(filters);
+    if (!normalized.keyword && !normalized.hometown && !normalized.school) {
+      return;
+    }
+
+    const user = await User.findById(userId).select("searchHistory");
+    if (!user) return;
+
+    const history = Array.isArray(user.searchHistory) ? [...user.searchHistory] : [];
+    const matchedIndex = history.findIndex((item) => {
+      const itemKeyword = String(item?.keyword || "").trim().toLowerCase();
+      const itemHometown = String(item?.hometown || "").trim().toLowerCase();
+      const itemSchool = String(item?.school || "").trim().toLowerCase();
+
+      return (
+        itemKeyword === normalized.keywordLower &&
+        itemHometown === normalized.hometownLower &&
+        itemSchool === normalized.schoolLower
+      );
+    });
+
+    const now = new Date();
+    const nextItem = {
+      keyword: normalized.keyword,
+      hometown: normalized.hometown,
+      school: normalized.school,
+      lastSearchedAt: now,
+    };
+
+    if (matchedIndex >= 0) {
+      history.splice(matchedIndex, 1);
+    }
+
+    history.unshift(nextItem);
+    user.searchHistory = history.slice(0, 30);
+    user.markModified("searchHistory");
+    await user.save();
+  }
+
+  async saveProfileVisitHistory(viewerId, targetUserId) {
+    if (!viewerId || !targetUserId) return;
+    if (String(viewerId) === String(targetUserId)) return;
+
+    const viewer = await User.findById(viewerId).select("profileVisitHistory");
+    if (!viewer) return;
+
+    const history = Array.isArray(viewer.profileVisitHistory)
+      ? [...viewer.profileVisitHistory]
+      : [];
+    const existingIndex = history.findIndex(
+      (item) => String(item?.userId || "") === String(targetUserId),
+    );
+
+    if (existingIndex >= 0) {
+      history.splice(existingIndex, 1);
+    }
+
+    history.unshift({
+      userId: targetUserId,
+      visitedAt: new Date(),
+    });
+
+    viewer.profileVisitHistory = history.slice(0, 50);
+    viewer.markModified("profileVisitHistory");
+    await viewer.save();
+  }
+
   buildFriendRequestNotificationPayload(notification, sender, targetUrl) {
     return {
       ...notification.toObject(),
@@ -51,33 +253,60 @@ class UserService {
     return null;
   }
 
-  async searchUsers(keyword, currentUserId) {
-    if (!keyword) {
+  async searchUsers(filters = {}, currentUserId) {
+    const normalized = this.normalizeSearchFilters(filters);
+    if (!normalized.keyword && !normalized.hometown && !normalized.school) {
       throw {
         statusCode: 400,
-        message: "Vui lòng nhập từ khóa tìm kiếm",
+        message: "Vui lòng nhập từ khóa hoặc bộ lọc tìm kiếm",
       };
     }
 
-    // Tìm account theo email / phone
-    const accountsByContact = await Account.find({
-      $or: [
-        { phoneNumber: { $regex: keyword, $options: "i" } },
-        { email: { $regex: keyword, $options: "i" } },
-      ],
-    }).select("_id");
+    let accountIds = [];
+    if (normalized.keyword) {
+      const accountsByContact = await Account.find({
+        $or: [
+          { phoneNumber: { $regex: normalized.keyword, $options: "i" } },
+          { email: { $regex: normalized.keyword, $options: "i" } },
+        ],
+      }).select("_id");
 
-    const accountIds = accountsByContact.map((acc) => acc._id);
+      accountIds = accountsByContact.map((acc) => acc._id);
+    }
 
-    const users = await User.find({
-      $or: [
-        { displayName: { $regex: keyword, $options: "i" } },
-        { accountId: { $in: accountIds } },
-      ],
+    const userFilter = {
       _id: { $ne: currentUserId },
-    })
+    };
+    const andConditions = [];
+
+    if (normalized.keyword) {
+      andConditions.push({
+        $or: [
+          { displayName: { $regex: normalized.keyword, $options: "i" } },
+          ...(accountIds.length ? [{ accountId: { $in: accountIds } }] : []),
+        ],
+      });
+    }
+
+    if (normalized.hometown) {
+      andConditions.push({
+        hometown: { $regex: normalized.hometown, $options: "i" },
+      });
+    }
+
+    if (normalized.school) {
+      andConditions.push({
+        school: { $regex: normalized.school, $options: "i" },
+      });
+    }
+
+    if (andConditions.length > 0) {
+      userFilter.$and = andConditions;
+    }
+
+    const users = await User.find(userFilter)
       .populate("accountId", "phoneNumber email")
-      .select("displayName avatar bio accountId")
+      .select("displayName avatar bio accountId hometown school")
       .limit(20);
 
     const currentUser = await User.findById(currentUserId).select("friends");
@@ -106,6 +335,8 @@ class UserService {
           displayName: user.displayName,
           avatar: user.avatar,
           bio: user.bio,
+          hometown: user.hometown || "",
+          school: user.school || "",
           phoneNumber: user.accountId?.phoneNumber || "",
           email: user.accountId?.email || "",
           isFriend,
@@ -121,7 +352,7 @@ class UserService {
     };
   }
 
-  async getUserProfile(userId) {
+  async getUserProfile(userId, viewerId = null) {
     // Validate ObjectId format
     if (!userId) {
       throw {
@@ -139,6 +370,10 @@ class UserService {
         statusCode: 404,
         message: "Không tìm thấy người dùng",
       };
+    }
+
+    if (viewerId && String(viewerId) !== String(userId)) {
+      await this.saveProfileVisitHistory(viewerId, userId);
     }
 
     return {
@@ -191,6 +426,8 @@ class UserService {
       };
     }
 
+    await this.saveProfileVisitHistory(viewerId, targetUserId);
+
     const viewerFriendIds = new Set(
       (viewer.friends || []).map((id) => id.toString()),
     );
@@ -221,6 +458,549 @@ class UserService {
       isFriend,
       mutualFriendsCount,
       createdAt: targetUser.createdAt,
+    };
+  }
+
+  async getSearchHistory(userId, { limit } = {}) {
+    const safeLimit = this.normalizeSearchHistoryLimit(limit);
+    const user = await User.findById(userId).select("searchHistory");
+
+    if (!user) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    const history = (user.searchHistory || [])
+      .map((item) => ({
+        keyword: String(item?.keyword || ""),
+        hometown: String(item?.hometown || ""),
+        school: String(item?.school || ""),
+        lastSearchedAt: item?.lastSearchedAt || null,
+      }))
+      .sort(
+        (left, right) =>
+          new Date(right?.lastSearchedAt || 0).getTime() -
+          new Date(left?.lastSearchedAt || 0).getTime(),
+      )
+      .slice(0, safeLimit);
+
+    return {
+      history,
+      total: history.length,
+      limit: safeLimit,
+    };
+  }
+
+  async clearSearchHistory(userId) {
+    await User.findByIdAndUpdate(userId, { $set: { searchHistory: [] } });
+    return { success: true };
+  }
+
+  async getProfileVisitHistory(userId, { limit } = {}) {
+    const safeLimit = this.normalizeSearchHistoryLimit(limit);
+    const user = await User.findById(userId)
+      .select("profileVisitHistory")
+      .populate(
+        "profileVisitHistory.userId",
+        "displayName avatar isOnline lastSeen hometown school",
+      )
+      .lean();
+
+    if (!user) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    const history = (user.profileVisitHistory || [])
+      .filter((item) => item?.userId && item?.visitedAt)
+      .sort(
+        (left, right) =>
+          new Date(right?.visitedAt || 0).getTime() -
+          new Date(left?.visitedAt || 0).getTime(),
+      )
+      .slice(0, safeLimit)
+      .map((item) => ({
+        visitedAt: item.visitedAt,
+        user: {
+          _id: item.userId._id,
+          displayName: item.userId.displayName || "",
+          avatar: item.userId.avatar || "",
+          isOnline: Boolean(item.userId.isOnline),
+          lastSeen: item.userId.lastSeen || null,
+          lastSeenText: formatLastSeen(item.userId.lastSeen, item.userId.isOnline),
+          hometown: item.userId.hometown || "",
+          school: item.userId.school || "",
+        },
+      }));
+
+    return {
+      history,
+      total: history.length,
+      limit: safeLimit,
+    };
+  }
+
+  async clearProfileVisitHistory(userId) {
+    await User.findByIdAndUpdate(userId, { $set: { profileVisitHistory: [] } });
+    return { success: true };
+  }
+
+  async getInteractionHistory(userId, { limit } = {}) {
+    const safeLimit = this.normalizeActivityLimit(limit);
+    const [user, viewerFriendIdSet] = await Promise.all([
+      User.findById(userId)
+        .select("likeHistory commentHistory videoViewHistory")
+        .lean(),
+      this.getViewerFriendIdSet(userId),
+    ]);
+
+    if (!user) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    const likeHistory = Array.isArray(user.likeHistory) ? user.likeHistory : [];
+    const commentHistory = Array.isArray(user.commentHistory)
+      ? user.commentHistory
+      : [];
+    const videoViewHistory = Array.isArray(user.videoViewHistory)
+      ? user.videoViewHistory
+      : [];
+
+    const sortedLikeHistory = [...likeHistory].sort(
+      (left, right) =>
+        new Date(right?.likedAt || 0).getTime() -
+        new Date(left?.likedAt || 0).getTime(),
+    );
+    const sortedCommentHistory = [...commentHistory].sort(
+      (left, right) =>
+        new Date(right?.commentedAt || 0).getTime() -
+        new Date(left?.commentedAt || 0).getTime(),
+    );
+    const sortedVideoViewHistory = [...videoViewHistory].sort(
+      (left, right) =>
+        new Date(right?.viewedAt || 0).getTime() -
+        new Date(left?.viewedAt || 0).getTime(),
+    );
+
+    const likedPostIds = [
+      ...new Set(sortedLikeHistory.map((item) => String(item?.postId || "")).filter(Boolean)),
+    ];
+    const commentPostIds = [
+      ...new Set(
+        sortedCommentHistory.map((item) => String(item?.postId || "")).filter(Boolean),
+      ),
+    ];
+    const commentIds = [
+      ...new Set(
+        sortedCommentHistory.map((item) => String(item?.commentId || "")).filter(Boolean),
+      ),
+    ];
+
+    const storyVideoIds = [
+      ...new Set(
+        sortedVideoViewHistory
+          .filter((item) => item?.sourceType === "story")
+          .map((item) => String(item?.sourceId || ""))
+          .filter(Boolean),
+      ),
+    ];
+    const postVideoIds = [
+      ...new Set(
+        sortedVideoViewHistory
+          .filter((item) => item?.sourceType === "post")
+          .map((item) => String(item?.sourceId || ""))
+          .filter(Boolean),
+      ),
+    ];
+
+    const [likedPostsRaw, commentedPostsRaw, commentsRaw, storiesRaw, viewedPostVideosRaw] =
+      await Promise.all([
+        likedPostIds.length
+          ? Post.find({
+              _id: { $in: likedPostIds },
+              isDeleted: { $ne: true },
+            })
+              .select(
+                "authorId content media privacy customAudienceIds likesCount commentsCount createdAt sharedPost.postId",
+              )
+              .populate("authorId", "displayName avatar")
+              .lean()
+          : [],
+        commentPostIds.length
+          ? Post.find({
+              _id: { $in: commentPostIds },
+              isDeleted: { $ne: true },
+            })
+              .select(
+                "authorId content media privacy customAudienceIds likesCount commentsCount createdAt sharedPost.postId",
+              )
+              .populate("authorId", "displayName avatar")
+              .lean()
+          : [],
+        commentIds.length
+          ? Comment.find({ _id: { $in: commentIds }, userId })
+              .select("_id postId content createdAt")
+              .lean()
+          : [],
+        storyVideoIds.length
+          ? Story.find({ _id: { $in: storyVideoIds } })
+              .select("authorId caption media createdAt expiresAt")
+              .populate("authorId", "displayName avatar")
+              .lean()
+          : [],
+        postVideoIds.length
+          ? Post.find({
+              _id: { $in: postVideoIds },
+              isDeleted: { $ne: true },
+            })
+              .select(
+                "authorId content media privacy customAudienceIds likesCount commentsCount createdAt sharedPost.postId",
+              )
+              .populate("authorId", "displayName avatar")
+              .lean()
+          : [],
+      ]);
+
+    const likedPostMap = new Map(likedPostsRaw.map((post) => [String(post._id), post]));
+    const commentedPostMap = new Map(
+      commentedPostsRaw.map((post) => [String(post._id), post]),
+    );
+    const commentMap = new Map(commentsRaw.map((comment) => [String(comment._id), comment]));
+    const storyMap = new Map(storiesRaw.map((story) => [String(story._id), story]));
+    const viewedPostVideoMap = new Map(
+      viewedPostVideosRaw.map((post) => [String(post._id), post]),
+    );
+    const originalPostIdCache = new Map();
+
+    const resolveOpenPostId = async (post) => {
+      const sourcePostId = String(post?._id || "");
+      if (!sourcePostId) return null;
+
+      if (originalPostIdCache.has(sourcePostId)) {
+        return originalPostIdCache.get(sourcePostId);
+      }
+
+      const openPostId = (await this.resolveOriginalPostId(post)) || sourcePostId;
+      originalPostIdCache.set(sourcePostId, openPostId);
+      return openPostId;
+    };
+
+    const likedPosts = [];
+    for (const item of sortedLikeHistory) {
+      if (likedPosts.length >= safeLimit) break;
+
+      const postId = String(item?.postId || "");
+      const post = likedPostMap.get(postId);
+      if (!post) continue;
+      if (!this.canViewerAccessPost(post, userId, viewerFriendIdSet)) continue;
+
+      const media = await this.resolvePostMediaUrls(post.media || []);
+      const sourcePostId = String(post._id);
+      const openPostId = await resolveOpenPostId(post);
+      likedPosts.push({
+        likedAt: item?.likedAt || null,
+        post: {
+          sourcePostId,
+          openPostId,
+          _id: post._id,
+          content: post.content || "",
+          media,
+          likesCount: Number(post.likesCount || 0),
+          commentsCount: Number(post.commentsCount || 0),
+          createdAt: post.createdAt || null,
+          author: {
+            _id: post.authorId?._id || post.authorId || null,
+            displayName: post.authorId?.displayName || "",
+            avatar: post.authorId?.avatar || "",
+          },
+        },
+      });
+    }
+
+    if (likedPosts.length === 0 && sortedLikeHistory.length === 0) {
+      const legacyLikedPosts = await Post.find({
+        likes: userId,
+        isDeleted: { $ne: true },
+      })
+        .select(
+          "authorId content media privacy customAudienceIds likesCount commentsCount createdAt updatedAt sharedPost.postId",
+        )
+        .populate("authorId", "displayName avatar")
+        .sort({ updatedAt: -1, _id: -1 })
+        .limit(safeLimit)
+        .lean();
+
+      for (const post of legacyLikedPosts) {
+        if (!this.canViewerAccessPost(post, userId, viewerFriendIdSet)) continue;
+        const media = await this.resolvePostMediaUrls(post.media || []);
+        const sourcePostId = String(post._id);
+        const openPostId = await resolveOpenPostId(post);
+        likedPosts.push({
+          likedAt: null,
+          post: {
+            sourcePostId,
+            openPostId,
+            _id: post._id,
+            content: post.content || "",
+            media,
+            likesCount: Number(post.likesCount || 0),
+            commentsCount: Number(post.commentsCount || 0),
+            createdAt: post.createdAt || null,
+            author: {
+              _id: post.authorId?._id || post.authorId || null,
+              displayName: post.authorId?.displayName || "",
+              avatar: post.authorId?.avatar || "",
+            },
+          },
+        });
+      }
+    }
+
+    const commentedPosts = [];
+    for (const item of sortedCommentHistory) {
+      if (commentedPosts.length >= safeLimit) break;
+
+      const postId = String(item?.postId || "");
+      const commentId = String(item?.commentId || "");
+      const post = commentedPostMap.get(postId);
+      const comment = commentMap.get(commentId);
+      if (!post || !comment) continue;
+      if (!this.canViewerAccessPost(post, userId, viewerFriendIdSet)) continue;
+
+      const media = await this.resolvePostMediaUrls(post.media || []);
+      const sourcePostId = String(post._id);
+      const openPostId = await resolveOpenPostId(post);
+      commentedPosts.push({
+        commentedAt: item?.commentedAt || comment.createdAt || null,
+        comment: {
+          _id: comment._id,
+          content: comment.content || "",
+          createdAt: comment.createdAt || null,
+        },
+        post: {
+          sourcePostId,
+          openPostId,
+          _id: post._id,
+          content: post.content || "",
+          media,
+          likesCount: Number(post.likesCount || 0),
+          commentsCount: Number(post.commentsCount || 0),
+          createdAt: post.createdAt || null,
+          author: {
+            _id: post.authorId?._id || post.authorId || null,
+            displayName: post.authorId?.displayName || "",
+            avatar: post.authorId?.avatar || "",
+          },
+        },
+      });
+    }
+
+    if (commentedPosts.length === 0 && sortedCommentHistory.length === 0) {
+      const legacyComments = await Comment.find({ userId })
+        .select("_id postId content createdAt")
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(safeLimit)
+        .lean();
+
+      const legacyCommentPostIds = [
+        ...new Set(legacyComments.map((comment) => String(comment.postId || ""))),
+      ].filter(Boolean);
+
+      const legacyCommentPosts = legacyCommentPostIds.length
+        ? await Post.find({
+            _id: { $in: legacyCommentPostIds },
+            isDeleted: { $ne: true },
+          })
+            .select(
+              "authorId content media privacy customAudienceIds likesCount commentsCount createdAt sharedPost.postId",
+            )
+            .populate("authorId", "displayName avatar")
+            .lean()
+        : [];
+
+      const legacyCommentPostMap = new Map(
+        legacyCommentPosts.map((post) => [String(post._id), post]),
+      );
+
+      for (const comment of legacyComments) {
+        const post = legacyCommentPostMap.get(String(comment.postId || ""));
+        if (!post) continue;
+        if (!this.canViewerAccessPost(post, userId, viewerFriendIdSet)) continue;
+
+        const media = await this.resolvePostMediaUrls(post.media || []);
+        const sourcePostId = String(post._id);
+        const openPostId = await resolveOpenPostId(post);
+        commentedPosts.push({
+          commentedAt: comment.createdAt || null,
+          comment: {
+            _id: comment._id,
+            content: comment.content || "",
+            createdAt: comment.createdAt || null,
+          },
+          post: {
+            sourcePostId,
+            openPostId,
+            _id: post._id,
+            content: post.content || "",
+            media,
+            likesCount: Number(post.likesCount || 0),
+            commentsCount: Number(post.commentsCount || 0),
+            createdAt: post.createdAt || null,
+            author: {
+              _id: post.authorId?._id || post.authorId || null,
+              displayName: post.authorId?.displayName || "",
+              avatar: post.authorId?.avatar || "",
+            },
+          },
+        });
+      }
+    }
+
+    const viewedVideos = [];
+    for (const item of sortedVideoViewHistory) {
+      if (viewedVideos.length >= safeLimit) break;
+
+      const sourceType = String(item?.sourceType || "story");
+      const sourceId = String(item?.sourceId || "");
+      if (!sourceId) continue;
+
+      if (sourceType === "story") {
+        const story = storyMap.get(sourceId);
+        if (!story || story?.media?.type !== "video") continue;
+
+        const mediaUrl =
+          story?.media?.url && !String(story.media.url).startsWith("http")
+            ? await getSignedUrlFromS3(story.media.url).catch(() => story.media.url)
+            : story?.media?.url || "";
+
+        viewedVideos.push({
+          viewedAt: item?.viewedAt || null,
+          sourceType: "story",
+          story: {
+            _id: story._id,
+            caption: story.caption || "",
+            media: {
+              ...story.media,
+              url: mediaUrl,
+            },
+            createdAt: story.createdAt || null,
+            expiresAt: story.expiresAt || null,
+            author: {
+              _id: story.authorId?._id || story.authorId || null,
+              displayName: story.authorId?.displayName || "",
+              avatar: story.authorId?.avatar || "",
+            },
+          },
+        });
+        continue;
+      }
+
+      if (sourceType === "post") {
+        const post = viewedPostVideoMap.get(sourceId);
+        if (!post) continue;
+        if (!this.canViewerAccessPost(post, userId, viewerFriendIdSet)) continue;
+
+        const media = await this.resolvePostMediaUrls(post.media || []);
+        const videoMedia = media.find((itemMedia) => itemMedia?.type === "video");
+        if (!videoMedia) continue;
+        const sourcePostId = String(post._id);
+        const openPostId = await resolveOpenPostId(post);
+
+        viewedVideos.push({
+          viewedAt: item?.viewedAt || null,
+          sourceType: "post",
+          post: {
+            sourcePostId,
+            openPostId,
+            _id: post._id,
+            content: post.content || "",
+            media: videoMedia,
+            createdAt: post.createdAt || null,
+            author: {
+              _id: post.authorId?._id || post.authorId || null,
+              displayName: post.authorId?.displayName || "",
+              avatar: post.authorId?.avatar || "",
+            },
+          },
+        });
+      }
+    }
+
+    if (viewedVideos.length === 0 && sortedVideoViewHistory.length === 0) {
+      const legacyViewedStories = await Story.find({
+        viewedBy: userId,
+        "media.type": "video",
+      })
+        .select("authorId caption media createdAt expiresAt")
+        .populate("authorId", "displayName avatar")
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(safeLimit)
+        .lean();
+
+      for (const story of legacyViewedStories) {
+        const mediaUrl =
+          story?.media?.url && !String(story.media.url).startsWith("http")
+            ? await getSignedUrlFromS3(story.media.url).catch(() => story.media.url)
+            : story?.media?.url || "";
+
+        viewedVideos.push({
+          viewedAt: null,
+          sourceType: "story",
+          story: {
+            _id: story._id,
+            caption: story.caption || "",
+            media: {
+              ...story.media,
+              url: mediaUrl,
+            },
+            createdAt: story.createdAt || null,
+            expiresAt: story.expiresAt || null,
+            author: {
+              _id: story.authorId?._id || story.authorId || null,
+              displayName: story.authorId?.displayName || "",
+              avatar: story.authorId?.avatar || "",
+            },
+          },
+        });
+      }
+    }
+
+    const [legacyLikedTotal, legacyCommentedTotal, legacyViewedVideosTotal] =
+      await Promise.all([
+        likeHistory.length === 0
+          ? Post.countDocuments({
+              likes: userId,
+              isDeleted: { $ne: true },
+            })
+          : Promise.resolve(likeHistory.length),
+        commentHistory.length === 0
+          ? Comment.countDocuments({ userId })
+          : Promise.resolve(commentHistory.length),
+        videoViewHistory.length === 0
+          ? Story.countDocuments({
+              viewedBy: userId,
+              "media.type": "video",
+            })
+          : Promise.resolve(videoViewHistory.length),
+      ]);
+
+    return {
+      summary: {
+        likedPosts: legacyLikedTotal,
+        commentedPosts: legacyCommentedTotal,
+        viewedVideos: legacyViewedVideosTotal,
+      },
+      likedPosts,
+      commentedPosts,
+      viewedVideos,
+      limit: safeLimit,
     };
   }
 

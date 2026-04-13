@@ -211,6 +211,46 @@ class ChatService {
     };
   }
 
+  extractReferencedPostId(post = null) {
+    const raw = post?.sharedPost?.postId;
+    if (!raw) return null;
+    if (typeof raw === "string") return raw;
+    return String(raw?._id || raw?.id || raw);
+  }
+
+  async resolveOriginalPostId(post = null) {
+    if (!post?._id) return null;
+
+    let currentId = String(post._id);
+    const visited = new Set();
+
+    for (let i = 0; i < 10; i += 1) {
+      if (!currentId || visited.has(currentId)) break;
+      visited.add(currentId);
+
+      const nextFromCurrent = this.extractReferencedPostId(post);
+      if (i === 0 && nextFromCurrent && !visited.has(String(nextFromCurrent))) {
+        currentId = String(nextFromCurrent);
+        continue;
+      }
+
+      const currentPost = await Post.findById(currentId)
+        .select("_id sharedPost.postId")
+        .lean();
+
+      if (!currentPost) break;
+
+      const nextId = this.extractReferencedPostId(currentPost);
+      if (!nextId || visited.has(String(nextId))) {
+        return String(currentPost._id);
+      }
+
+      currentId = String(nextId);
+    }
+
+    return currentId;
+  }
+
   async decorateMessageWithSharedPost(
     message,
     viewerId,
@@ -253,12 +293,16 @@ class ChatService {
     const normalizedSharedPost = await this.resolveMessageSharedPostMedia(
       sharedPostRaw,
     );
+    const originalPostId = await this.resolveOriginalPostId(sharedPostRaw);
+    const sourcePostId = String(sharedPostRaw._id);
 
     return {
       ...baseMessage,
       sharedPost: {
         ...normalizedSharedPost,
         isAccessible: true,
+        sourcePostId,
+        openPostId: originalPostId || sourcePostId,
       },
     };
   }
@@ -785,6 +829,201 @@ class ChatService {
     );
   }
 
+  normalizeShareTargetLimit(limit) {
+    const parsed = parseInt(limit, 10);
+    if (!Number.isFinite(parsed)) return 20;
+    return Math.min(Math.max(parsed, 1), 100);
+  }
+
+  normalizeShareTargetKeyword(keyword) {
+    return String(keyword || "").trim().toLowerCase();
+  }
+
+  buildShareTargetMember(member) {
+    const user = member?.userId;
+    if (!user || !user._id) return null;
+
+    return {
+      _id: String(user._id),
+      displayName: String(user.displayName || ""),
+      avatar: String(user.avatar || ""),
+      isOnline: Boolean(user.isOnline),
+      lastSeen: user.lastSeen || null,
+      role: String(member?.role || MEMBER_ROLES.MEMBER),
+      isAiBot: Boolean(user.isAiBot),
+    };
+  }
+
+  buildShareTargetItem(conversation, userId) {
+    const normalizedConversationId = String(conversation?._id || "");
+    if (!normalizedConversationId) return null;
+
+    const members = (conversation?.members || [])
+      .map((member) => this.buildShareTargetMember(member))
+      .filter(Boolean);
+
+    if (!members.length) return null;
+
+    const isPrivate = conversation?.type === CONVERSATION_TYPES.PRIVATE;
+    const normalizedUserId = String(userId);
+    const nonSelfMembers = members.filter(
+      (member) => String(member._id) !== normalizedUserId,
+    );
+    const hasAiMember = nonSelfMembers.some((member) => member.isAiBot);
+
+    if (conversation?.isAiAssistant || (isPrivate && hasAiMember)) {
+      return null;
+    }
+
+    const rawLastMessage = conversation?.lastMessage || null;
+    const hasLastMessage = Boolean(rawLastMessage?.createdAt);
+    const activityAt = rawLastMessage?.createdAt || conversation?.updatedAt || null;
+
+    if (isPrivate) {
+      const partner = nonSelfMembers[0];
+      if (!partner) return null;
+
+      return {
+        conversationId: normalizedConversationId,
+        type: CONVERSATION_TYPES.PRIVATE,
+        displayName: partner.displayName || "Người dùng",
+        avatar: partner.avatar || "",
+        updatedAt: conversation?.updatedAt || null,
+        activityAt,
+        hasLastMessage,
+        lastMessage: rawLastMessage
+          ? {
+              content: String(rawLastMessage.content || ""),
+              type: String(rawLastMessage.type || MESSAGE_TYPES.TEXT),
+              senderName: String(rawLastMessage.senderName || ""),
+              createdAt: rawLastMessage.createdAt || null,
+            }
+          : null,
+        memberCount: members.length,
+        members,
+        partner,
+      };
+    }
+
+    const fallbackGroupName = nonSelfMembers
+      .map((member) => member.displayName)
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(", ");
+
+    return {
+      conversationId: normalizedConversationId,
+      type: CONVERSATION_TYPES.GROUP,
+      displayName: String(conversation?.name || "").trim() || fallbackGroupName || "Nhóm chat",
+      avatar: String(conversation?.groupAvatar || ""),
+      updatedAt: conversation?.updatedAt || null,
+      activityAt,
+      hasLastMessage,
+      lastMessage: rawLastMessage
+        ? {
+            content: String(rawLastMessage.content || ""),
+            type: String(rawLastMessage.type || MESSAGE_TYPES.TEXT),
+            senderName: String(rawLastMessage.senderName || ""),
+            createdAt: rawLastMessage.createdAt || null,
+          }
+        : null,
+      memberCount: members.length,
+      members,
+      partner: null,
+    };
+  }
+
+  matchesShareTargetKeyword(target, keyword) {
+    if (!keyword) return true;
+
+    const haystacks = [
+      target?.displayName,
+      target?.partner?.displayName,
+      ...(target?.members || []).map((member) => member.displayName),
+    ]
+      .filter(Boolean)
+      .map((value) => String(value).toLowerCase());
+
+    return haystacks.some((value) => value.includes(keyword));
+  }
+
+  buildRecentMembersFromTargets(targets, userId, limit = 20) {
+    const normalizedUserId = String(userId);
+    const memberMap = new Map();
+
+    for (const target of targets || []) {
+      for (const member of target?.members || []) {
+        if (!member?._id || member.isAiBot) continue;
+        if (String(member._id) === normalizedUserId) continue;
+
+        const existing = memberMap.get(member._id);
+        const interactionAt = target?.activityAt || target?.updatedAt || null;
+        const interactionMs = interactionAt ? new Date(interactionAt).getTime() : 0;
+
+        if (!existing || interactionMs > existing.interactionMs) {
+          memberMap.set(member._id, {
+            _id: member._id,
+            displayName: member.displayName,
+            avatar: member.avatar,
+            isOnline: member.isOnline,
+            lastSeen: member.lastSeen,
+            interactionAt,
+            interactionMs,
+          });
+        }
+      }
+    }
+
+    return [...memberMap.values()]
+      .sort((left, right) => right.interactionMs - left.interactionMs)
+      .slice(0, limit)
+      .map(({ interactionMs, ...member }) => member);
+  }
+
+  async getShareTargets(userId, { q, limit } = {}) {
+    const safeLimit = this.normalizeShareTargetLimit(limit);
+    const keyword = this.normalizeShareTargetKeyword(q);
+
+    const conversations = await Conversation.find({
+      "members.userId": userId,
+    })
+      .select(
+        "_id type isAiAssistant name groupAvatar members.userId members.role lastMessage updatedAt",
+      )
+      .sort({ updatedAt: -1 })
+      .populate("members.userId", "displayName avatar isOnline lastSeen isAiBot")
+      .lean();
+
+    const mappedTargets = conversations
+      .map((conversation) => this.buildShareTargetItem(conversation, userId))
+      .filter(Boolean);
+
+    const filteredTargets = mappedTargets.filter((target) =>
+      this.matchesShareTargetKeyword(target, keyword),
+    );
+
+    filteredTargets.sort(
+      (left, right) =>
+        new Date(right?.activityAt || 0).getTime() -
+        new Date(left?.activityAt || 0).getTime(),
+    );
+
+    const targets = filteredTargets.slice(0, safeLimit);
+    const recentMembers = this.buildRecentMembersFromTargets(
+      targets,
+      userId,
+      safeLimit,
+    );
+
+    return {
+      targets,
+      recentMembers,
+      total: filteredTargets.length,
+      limit: safeLimit,
+      keyword,
+    };
+  }
+
   /**
    * Lấy tin nhắn trong conversation
    */
@@ -829,7 +1068,8 @@ class ChatService {
       })
       .populate({
         path: "sharedPostId",
-        select: "authorId content media privacy customAudienceIds isDeleted createdAt",
+        select:
+          "authorId content media privacy customAudienceIds isDeleted createdAt sharedPost.postId",
         populate: {
           path: "authorId",
           select: "displayName avatar",
@@ -963,7 +1203,8 @@ class ChatService {
     });
     await message.populate({
       path: "sharedPostId",
-      select: "authorId content media privacy customAudienceIds isDeleted createdAt",
+      select:
+        "authorId content media privacy customAudienceIds isDeleted createdAt sharedPost.postId",
       populate: {
         path: "authorId",
         select: "displayName avatar",

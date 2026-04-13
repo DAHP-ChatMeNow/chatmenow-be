@@ -62,6 +62,8 @@ router.post(
   postController.sharePostToConversation,
 );
 
+router.get("/:id/original", verifyToken, postController.getOriginalPostTarget);
+
 router.get("/:id", verifyToken, postController.getPostDetail);
 
 router.patch("/:id/privacy", verifyToken, postController.updateMyPostPrivacy);
