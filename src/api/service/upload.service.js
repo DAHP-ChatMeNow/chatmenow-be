@@ -147,6 +147,63 @@ class UploadService {
     return updatedUser;
   }
 
+  async uploadCoverImage(userId, file) {
+    if (!file) {
+      throw {
+        statusCode: 400,
+        message: "Không tìm thấy file ảnh",
+      };
+    }
+
+    const s3Key = await uploadToS3(file, "covers");
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { coverImage: s3Key },
+      { new: true },
+    );
+
+    if (!updatedUser) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy user",
+      };
+    }
+
+    return updatedUser;
+  }
+
+  async deleteCoverImage(userId) {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy user",
+      };
+    }
+
+    if (user.coverImage && !user.coverImage.startsWith("http")) {
+      try {
+        const deleteParams = {
+          Bucket: process.env.S3_BUCKET_NAME,
+          Key: user.coverImage,
+        };
+        const command = new DeleteObjectCommand(deleteParams);
+        await s3Client.send(command);
+      } catch (error) {
+        console.error("Lỗi khi xóa ảnh bìa từ S3:", error.message);
+      }
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { coverImage: "" },
+      { new: true },
+    );
+
+    return updatedUser;
+  }
+
   async getPresignedUrl(key) {
     if (!key) {
       throw {

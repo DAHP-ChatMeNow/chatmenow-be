@@ -18,8 +18,14 @@ const MessageSchema = new Schema(
     content: { type: String },
     type: {
       type: String,
-      enum: ["text", "image", "video", "audio", "file", "system"],
+      enum: ["text", "image", "video", "audio", "file", "shared_post", "system"],
       default: "text",
+    },
+
+    sharedPostId: {
+      type: Schema.Types.ObjectId,
+      ref: "Post",
+      default: null,
     },
 
     attachments: [

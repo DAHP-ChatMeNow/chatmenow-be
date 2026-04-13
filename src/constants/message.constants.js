@@ -4,6 +4,7 @@ const MESSAGE_TYPES = {
   VIDEO: "video",
   AUDIO: "audio",
   FILE: "file",
+  SHARED_POST: "shared_post",
   SYSTEM: "system",
 };
 

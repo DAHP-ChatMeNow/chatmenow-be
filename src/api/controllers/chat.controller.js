@@ -430,7 +430,8 @@ exports.sendMessage = async (req, res) => {
         type === "image" ||
         type === "audio" ||
         type === "file" ||
-        type === "video"
+        type === "video" ||
+        type === "shared_post"
       ) {
         return res.status(400).json({
           message: "Cuộc trò chuyện AI hiện chỉ hỗ trợ tin nhắn văn bản",

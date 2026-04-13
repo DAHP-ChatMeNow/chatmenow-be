@@ -4,6 +4,7 @@ const Comment = require("../models/comment.model");
 const Notification = require("../models/notification.model");
 const User = require("../models/user.model");
 const aiService = require("./ai.service");
+const chatService = require("./chat.service");
 const { POST_PRIVACY } = require("../../constants");
 const { uploadToS3, getSignedUrlFromS3 } = require("../middleware/storage");
 const {
@@ -247,6 +248,75 @@ class PostService {
     return { ...postObj, media: resolvedMedia };
   }
 
+  async resolveSharedPostForViewer(postObj, viewerId, viewerFriendIdSet = null) {
+    const sharedPostData = postObj?.sharedPost;
+    const originalPostRaw = sharedPostData?.postId;
+
+    if (!sharedPostData || !originalPostRaw) {
+      return postObj;
+    }
+
+    const originalPost =
+      typeof originalPostRaw.toObject === "function"
+        ? originalPostRaw.toObject()
+        : originalPostRaw;
+
+    if (!originalPost || originalPost.isDeleted) {
+      return {
+        ...postObj,
+        sharedPost: {
+          ...sharedPostData,
+          postId: null,
+          isAccessible: false,
+          unavailableReason: "Bài viết gốc đã bị xóa hoặc không tồn tại",
+        },
+      };
+    }
+
+    const friendIdSet = viewerFriendIdSet || (await this.getViewerFriendIdSet(viewerId));
+    if (!this.canViewPost(originalPost, viewerId, friendIdSet)) {
+      return {
+        ...postObj,
+        sharedPost: {
+          ...sharedPostData,
+          postId: null,
+          isAccessible: false,
+          unavailableReason: "Bạn không có quyền xem bài viết gốc",
+        },
+      };
+    }
+
+    const resolvedOriginal = await this.resolvePostMedia({
+      ...originalPost,
+      isLikedByCurrentUser: this.hasUserLikedPost(originalPost, viewerId),
+    });
+
+    return {
+      ...postObj,
+      sharedPost: {
+        ...sharedPostData,
+        postId: {
+          ...resolvedOriginal,
+          isAccessible: true,
+        },
+      },
+    };
+  }
+
+  async resolvePostForViewer(post, viewerId, viewerFriendIdSet = null) {
+    const postObj = typeof post.toObject === "function" ? post.toObject() : post;
+    const withLikeStatus = {
+      ...postObj,
+      isLikedByCurrentUser: this.hasUserLikedPost(postObj, viewerId),
+    };
+    const withMedia = await this.resolvePostMedia(withLikeStatus);
+    return await this.resolveSharedPostForViewer(
+      withMedia,
+      viewerId,
+      viewerFriendIdSet,
+    );
+  }
+
   /**
    * Lấy newsfeed
    */
@@ -273,18 +343,25 @@ class PostService {
         .sort({ createdAt: -1, _id: -1 })
         .skip((parsedPage - 1) * parsedLimit)
         .limit(parsedLimit)
-        .populate("authorId", "displayName avatar"),
+        .populate("authorId", "displayName avatar")
+        .populate({
+          path: "sharedPost.postId",
+          select:
+            "authorId content media privacy customAudienceIds likes likesCount commentsCount isDeleted createdAt",
+          populate: {
+            path: "authorId",
+            select: "displayName avatar",
+          },
+        }),
     ]);
 
-    // Thêm flag isLikedByCurrentUser + resolve media URLs
+    const viewerFriendIdSet = new Set(
+      this.normalizeObjectIdList(viewer.friends || []),
+    );
     const postsWithLikeStatus = await Promise.all(
-      posts.map(async (post) => {
-        const postObj = {
-          ...post.toObject(),
-          isLikedByCurrentUser: this.hasUserLikedPost(post, userId),
-        };
-        return await this.resolvePostMedia(postObj);
-      }),
+      posts.map(async (post) =>
+        this.resolvePostForViewer(post, userId, viewerFriendIdSet),
+      ),
     );
 
     return {
@@ -370,8 +447,7 @@ class PostService {
       "authorId",
       "displayName avatar",
     );
-    const postObj = populatedPost.toObject();
-    return await this.resolvePostMedia(postObj);
+    return await this.resolvePostForViewer(populatedPost, userId);
   }
 
   /**
@@ -388,16 +464,22 @@ class PostService {
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit))
-      .populate("authorId", "displayName avatar");
+      .populate("authorId", "displayName avatar")
+      .populate({
+        path: "sharedPost.postId",
+        select:
+          "authorId content media privacy customAudienceIds likes likesCount commentsCount isDeleted createdAt",
+        populate: {
+          path: "authorId",
+          select: "displayName avatar",
+        },
+      });
 
+    const viewerFriendIdSet = await this.getViewerFriendIdSet(userId);
     const resolvedPosts = await Promise.all(
-      posts.map(async (post) => {
-        const postObj = {
-          ...post.toObject(),
-          isLikedByCurrentUser: this.hasUserLikedPost(post, userId),
-        };
-        return await this.resolvePostMedia(postObj);
-      }),
+      posts.map(async (post) =>
+        this.resolvePostForViewer(post, userId, viewerFriendIdSet),
+      ),
     );
 
     return {
@@ -418,14 +500,17 @@ class PostService {
     };
 
     let visibilityConditions = [];
+    let viewerFriendIdSet = null;
 
     if (String(targetUserId) === String(viewerId)) {
       visibilityConditions = [{}];
+      viewerFriendIdSet = await this.getViewerFriendIdSet(viewerId);
     } else {
-      const [viewerFriendIdSet, targetUser] = await Promise.all([
+      const [resolvedViewerFriendIdSet, targetUser] = await Promise.all([
         this.getViewerFriendIdSet(viewerId),
         User.findById(targetUserId).select("friends").lean(),
       ]);
+      viewerFriendIdSet = resolvedViewerFriendIdSet;
 
       if (!targetUser) {
         throw {
@@ -456,16 +541,21 @@ class PostService {
       .sort({ createdAt: -1, _id: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit))
-      .populate("authorId", "displayName avatar");
+      .populate("authorId", "displayName avatar")
+      .populate({
+        path: "sharedPost.postId",
+        select:
+          "authorId content media privacy customAudienceIds likes likesCount commentsCount isDeleted createdAt",
+        populate: {
+          path: "authorId",
+          select: "displayName avatar",
+        },
+      });
 
     const resolvedPosts = await Promise.all(
-      posts.map(async (post) => {
-        const postObj = {
-          ...post.toObject(),
-          isLikedByCurrentUser: this.hasUserLikedPost(post, viewerId),
-        };
-        return await this.resolvePostMedia(postObj);
-      }),
+      posts.map(async (post) =>
+        this.resolvePostForViewer(post, viewerId, viewerFriendIdSet),
+      ),
     );
 
     return {
@@ -481,7 +571,17 @@ class PostService {
    */
   async getPostDetail(postId, viewerId) {
     const [post, viewerFriendIdSet] = await Promise.all([
-      Post.findById(postId).populate("authorId", "displayName avatar"),
+      Post.findById(postId)
+        .populate("authorId", "displayName avatar")
+        .populate({
+          path: "sharedPost.postId",
+          select:
+            "authorId content media privacy customAudienceIds likes likesCount commentsCount isDeleted createdAt",
+          populate: {
+            path: "authorId",
+            select: "displayName avatar",
+          },
+        }),
       this.getViewerFriendIdSet(viewerId),
     ]);
 
@@ -494,8 +594,7 @@ class PostService {
       };
     }
 
-    const postObj = post.toObject();
-    return await this.resolvePostMedia(postObj);
+    return await this.resolvePostForViewer(post, viewerId, viewerFriendIdSet);
   }
 
   async updateMyPostPrivacy(userId, postId, privacy, customAudienceIds) {
@@ -537,8 +636,7 @@ class PostService {
       "authorId",
       "displayName avatar",
     );
-    const postObj = updatedPost.toObject();
-    return await this.resolvePostMedia(postObj);
+    return await this.resolvePostForViewer(updatedPost, userId);
   }
 
   async getAllPostsForAdmin({
@@ -1163,6 +1261,69 @@ class PostService {
         maxOutputTokens: 1200,
       },
       timeoutMs: 30000,
+    });
+  }
+
+  async sharePostToMyTimeline(
+    userId,
+    sourcePostId,
+    { content, privacy, customAudienceIds } = {},
+  ) {
+    const sourcePost = await this.getAccessiblePost(sourcePostId, userId);
+    const normalizedPrivacy = this.normalizePrivacy(privacy || POST_PRIVACY.PUBLIC);
+    const resolvedAudienceIds = await this.resolveCustomAudience(
+      userId,
+      normalizedPrivacy,
+      customAudienceIds,
+    );
+
+    const newSharedPost = await Post.create({
+      authorId: userId,
+      content: String(content || "").trim(),
+      privacy: normalizedPrivacy,
+      customAudienceIds: resolvedAudienceIds,
+      sharedPost: {
+        postId: sourcePost._id,
+        authorId: sourcePost.authorId,
+        sharedAt: new Date(),
+      },
+    });
+
+    const populatedSharedPost = await Post.findById(newSharedPost._id)
+      .populate("authorId", "displayName avatar")
+      .populate({
+        path: "sharedPost.postId",
+        select:
+          "authorId content media privacy customAudienceIds likes likesCount commentsCount isDeleted createdAt",
+        populate: {
+          path: "authorId",
+          select: "displayName avatar",
+        },
+      });
+
+    return await this.resolvePostForViewer(populatedSharedPost, userId);
+  }
+
+  async sharePostToConversation(
+    userId,
+    sourcePostId,
+    { conversationId, content } = {},
+  ) {
+    if (!conversationId) {
+      throw {
+        statusCode: 400,
+        message: "Thiếu conversationId để chia sẻ bài viết",
+      };
+    }
+
+    await this.getAccessiblePost(sourcePostId, userId);
+
+    return await chatService.sendMessage(userId, {
+      conversationId,
+      type: "shared_post",
+      sharedPostId: sourcePostId,
+      content: String(content || "").trim(),
+      attachments: [],
     });
   }
 
