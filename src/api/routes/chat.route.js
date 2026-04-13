@@ -5,6 +5,7 @@ const { verifyToken, requireAdmin } = require("../middleware/authMiddleware");
 const { multerUploads } = require("../middleware/storage");
 
 router.get("/conversations", verifyToken, chatController.getConversations);
+router.get("/share-targets", verifyToken, chatController.getShareTargets);
 router.get(
   "/ai/conversation",
   verifyToken,

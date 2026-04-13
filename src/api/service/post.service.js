@@ -12,6 +12,58 @@ const {
 } = require("../../utils/realtime-notification.helper");
 
 class PostService {
+  async upsertLikeHistory(userId, postId) {
+    const user = await User.findById(userId).select("likeHistory");
+    if (!user) return;
+
+    const history = Array.isArray(user.likeHistory) ? [...user.likeHistory] : [];
+    const existingIndex = history.findIndex(
+      (item) => String(item?.postId || "") === String(postId),
+    );
+
+    if (existingIndex >= 0) {
+      history.splice(existingIndex, 1);
+    }
+
+    history.unshift({
+      postId,
+      likedAt: new Date(),
+    });
+
+    user.likeHistory = history.slice(0, 100);
+    user.markModified("likeHistory");
+    await user.save();
+  }
+
+  async removeLikeHistory(userId, postId) {
+    await User.updateOne(
+      { _id: userId },
+      {
+        $pull: {
+          likeHistory: {
+            postId,
+          },
+        },
+      },
+    );
+  }
+
+  async appendCommentHistory(userId, postId, commentId) {
+    const user = await User.findById(userId).select("commentHistory");
+    if (!user) return;
+
+    const history = Array.isArray(user.commentHistory) ? [...user.commentHistory] : [];
+    history.unshift({
+      postId,
+      commentId,
+      commentedAt: new Date(),
+    });
+
+    user.commentHistory = history.slice(0, 200);
+    user.markModified("commentHistory");
+    await user.save();
+  }
+
   hasUserLikedPost(post, userId) {
     if (!post?.likes || post.likes.length === 0) return false;
     const userIdString = userId.toString();
@@ -26,6 +78,46 @@ class PostService {
       .filter((id) => mongoose.Types.ObjectId.isValid(id));
 
     return [...new Set(normalized)];
+  }
+
+  async resolveOriginalPostId(postId) {
+    const normalizedPostId = String(postId || "").trim();
+    if (!normalizedPostId || !mongoose.Types.ObjectId.isValid(normalizedPostId)) {
+      throw {
+        statusCode: 400,
+        message: "postId không hợp lệ",
+      };
+    }
+
+    let currentId = normalizedPostId;
+    const visited = new Set();
+
+    for (let i = 0; i < 10; i += 1) {
+      if (visited.has(currentId)) break;
+      visited.add(currentId);
+
+      const currentPost = await Post.findById(currentId)
+        .select("_id sharedPost.postId isDeleted")
+        .lean();
+
+      if (!currentPost || currentPost.isDeleted) {
+        throw {
+          statusCode: 404,
+          message: "Bài viết không tồn tại",
+        };
+      }
+
+      const nextId = currentPost?.sharedPost?.postId
+        ? String(currentPost.sharedPost.postId)
+        : null;
+      if (!nextId || visited.has(nextId)) {
+        return String(currentPost._id);
+      }
+
+      currentId = nextId;
+    }
+
+    return currentId;
   }
 
   parseAudienceIds(rawAudienceIds) {
@@ -597,6 +689,17 @@ class PostService {
     return await this.resolvePostForViewer(post, viewerId, viewerFriendIdSet);
   }
 
+  async getOriginalPostTarget(postId, viewerId) {
+    const originalPostId = await this.resolveOriginalPostId(postId);
+    await this.getAccessiblePost(originalPostId, viewerId);
+
+    return {
+      sourcePostId: String(postId),
+      originalPostId,
+      isOriginal: String(originalPostId) === String(postId),
+    };
+  }
+
   async updateMyPostPrivacy(userId, postId, privacy, customAudienceIds) {
     if (privacy === undefined || privacy === null || String(privacy).trim() === "") {
       throw {
@@ -988,6 +1091,7 @@ class PostService {
         $pull: { likes: userId },
         $set: { likesCount: Math.max((post.likesCount || 0) - 1, 0) },
       });
+      await this.removeLikeHistory(userId, postId);
 
       return {
         message: "Unliked",
@@ -1003,6 +1107,7 @@ class PostService {
       },
       { new: true },
     ).populate("authorId", "displayName avatar");
+    await this.upsertLikeHistory(userId, postId);
 
     // Tạo notification
     if (post.authorId.toString() !== userId) {
@@ -1365,6 +1470,7 @@ class PostService {
       content,
       replyToCommentId: validatedReplyToCommentId,
     });
+    await this.appendCommentHistory(userId, postId, newComment._id);
 
     // Tăng số lượng comment
     const post = await Post.findByIdAndUpdate(postId, {

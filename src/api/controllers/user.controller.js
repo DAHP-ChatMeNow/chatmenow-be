@@ -2,10 +2,21 @@ const userService = require("../service/user.service");
 
 exports.searchUsers = async (req, res) => {
   try {
-    const { q, query } = req.query;
+    const { q, query, city, hometown, school, saveHistory } = req.query;
     const keyword = (q ?? query ?? "").trim();
 
-    const result = await userService.searchUsers(keyword, req.user.userId);
+    const filters = {
+      keyword,
+      city: (city ?? hometown ?? "").trim(),
+      school: (school ?? "").trim(),
+    };
+
+    const result = await userService.searchUsers(filters, req.user.userId);
+    const shouldSaveHistory = String(saveHistory || "true").toLowerCase() !== "false";
+
+    if (shouldSaveHistory) {
+      await userService.saveSearchHistory(req.user.userId, filters);
+    }
 
     res.status(200).json({
       success: true,
@@ -20,13 +31,68 @@ exports.searchUsers = async (req, res) => {
   }
 };
 
+exports.getInteractionHistory = async (req, res) => {
+  try {
+    const result = await userService.getInteractionHistory(req.user.userId, {
+      limit: req.query.limit,
+    });
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.getUserProfile = async (req, res) => {
   try {
-    const user = await userService.getUserProfile(req.params.userId);
+    const user = await userService.getUserProfile(
+      req.params.userId,
+      req.user.userId,
+    );
 
     res.status(200).json({
       success: true,
       user,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getSearchHistory = async (req, res) => {
+  try {
+    const result = await userService.getSearchHistory(req.user.userId, {
+      limit: req.query.limit,
+    });
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.clearSearchHistory = async (req, res) => {
+  try {
+    await userService.clearSearchHistory(req.user.userId);
+
+    res.status(200).json({
+      success: true,
+      message: "Đã xóa lịch sử tìm kiếm",
     });
   } catch (error) {
     if (error.statusCode) {
@@ -63,6 +129,40 @@ exports.getFriendProfile = async (req, res) => {
     res.status(200).json({
       success: true,
       user,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getProfileVisitHistory = async (req, res) => {
+  try {
+    const result = await userService.getProfileVisitHistory(req.user.userId, {
+      limit: req.query.limit,
+    });
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.clearProfileVisitHistory = async (req, res) => {
+  try {
+    await userService.clearProfileVisitHistory(req.user.userId);
+
+    res.status(200).json({
+      success: true,
+      message: "Đã xóa lịch sử đã truy cập",
     });
   } catch (error) {
     if (error.statusCode) {
