@@ -134,6 +134,11 @@ router.post(
   verifyToken,
   chatController.unsendMessage,
 );
+router.post(
+  "/messages/:messageId/react",
+  verifyToken,
+  chatController.reactToMessage,
+);
 router.delete(
   "/messages/:messageId/me",
   verifyToken,
