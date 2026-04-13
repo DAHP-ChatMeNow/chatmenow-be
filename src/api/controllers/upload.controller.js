@@ -81,9 +81,33 @@ const getChatAttachmentUploadUrl = async (req, res) => {
   }
 };
 
+
+const getReelVideoUploadUrl = async (req, res) => {
+  try {
+    const { fileName, contentType, fileSize } = req.body || {};
+    const result = await uploadService.createReelVideoUpload({
+      userId: req.user.userId,
+      fileName,
+      contentType,
+      fileSize,
+    });
+    res.status(200).json(result);
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ msg: err.message });
+    }
+    res.status(500).json({
+      msg: "Lỗi server khi tạo upload URL cho reel video",
+      error: err.message,
+    });
+  }
+};
+
 module.exports = {
   uploadImage,
   deleteAvatar,
   getPresignedUrl,
   getChatAttachmentUploadUrl,
+  getReelVideoUploadUrl,
 };
+

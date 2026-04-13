@@ -1,5 +1,6 @@
 const Story = require("../models/story.model");
 const User = require("../models/user.model");
+const Notification = require("../models/notification.model");
 const { uploadToS3, getSignedUrlFromS3 } = require("../middleware/storage");
 const { STORY_PRIVACY, STORY_SETTINGS } = require("../../constants/story.constants");
 
@@ -41,7 +42,7 @@ class StoryService {
     return false;
   }
 
-  async createStory(userId, { caption = "", privacy = STORY_PRIVACY.FRIENDS, videoDuration }, file) {
+  async createStory(userId, { caption = "", privacy = STORY_PRIVACY.FRIENDS, videoDuration, musicUrl = null, musicTitle = null, musicArtist = null }, file) {
     if (!file) {
       throw {
         statusCode: 400,
@@ -100,6 +101,9 @@ class StoryService {
         type: isImage ? "image" : "video",
         duration,
       },
+      musicUrl: musicUrl || null,
+      musicTitle: musicTitle || null,
+      musicArtist: musicArtist || null,
       expiresAt,
     });
 
@@ -362,6 +366,18 @@ class StoryService {
         emoji,
         users: [userId],
       });
+
+      // Create notification
+      const storyAuthorId = story.authorId.toString();
+      if (storyAuthorId !== userId.toString()) {
+        await Notification.create({
+          type: "story_react",
+          recipientId: storyAuthorId,
+          senderId: userId,
+          referenced: story._id,
+          isRead: false
+        }).catch(() => { }); // gracefully fail if needed
+      }
     }
 
     await story.save();

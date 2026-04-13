@@ -18,8 +18,17 @@ const MessageSchema = new Schema(
     content: { type: String },
     type: {
       type: String,
-      enum: ["text", "image", "video", "audio", "file", "system"],
+      enum: ["text", "image", "video", "audio", "file", "system", "music"],
       default: "text",
+    },
+
+    musicInfo: {
+      title: { type: String, default: null },
+      artist: { type: String, default: null },
+      url: { type: String, default: null },
+      coverUrl: { type: String, default: null },
+      duration: { type: Number, default: 0 },
+      source: { type: String, default: "jamendo" },
     },
 
     attachments: [

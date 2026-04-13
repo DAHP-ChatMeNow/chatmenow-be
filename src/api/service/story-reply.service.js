@@ -1,6 +1,7 @@
 const StoryReply = require("../models/story-reply.model");
 const Story = require("../models/story.model");
 const User = require("../models/user.model");
+const Notification = require("../models/notification.model");
 const { STORY_PRIVACY, STORY_SETTINGS } = require("../../constants/story.constants");
 
 class StoryReplyService {
@@ -63,6 +64,17 @@ class StoryReplyService {
     await Story.findByIdAndUpdate(storyId, {
       $inc: { replyCount: 1 },
     });
+
+    if (storyAuthorId !== senderId) {
+      await Notification.create({
+        type: "story_reply",
+        recipientId: storyAuthorId,
+        senderId: userId,
+        referenced: storyId,
+        metadata: { replyId: reply._id },
+        isRead: false
+      }).catch(() => { });
+    }
 
     return reply.toObject();
   }
