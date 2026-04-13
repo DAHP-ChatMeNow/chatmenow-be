@@ -12,6 +12,11 @@ const CALL_TYPE = {
   VIDEO: "video",
 };
 
+const CALL_MODE = {
+  DIRECT: "direct",
+  GROUP: "group",
+};
+
 const REJECTION_REASON = {
   DECLINED: "declined",
   TIMEOUT: "timeout",
@@ -43,6 +48,7 @@ const SOCKET_EVENTS = {
 module.exports = {
   VIDEO_CALL_STATUS,
   CALL_TYPE,
+  CALL_MODE,
   REJECTION_REASON,
   SOCKET_EVENTS,
 };

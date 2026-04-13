@@ -52,6 +52,34 @@ const multerPostMedia = multer({
   },
 }).array("media", 10); // Cho phép tối đa 10 files
 
+// Middleware cho upload story (single file - ảnh hoặc video)
+const multerStoryMedia = multer({
+  storage,
+  limits: {
+    fileSize: 20 * 1024 * 1024, // 20MB max file size
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedMimeTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "video/mp4",
+      "video/quicktime",
+    ];
+
+    if (!allowedMimeTypes.includes(file.mimetype)) {
+      cb(
+        new Error(
+          "Story chỉ chấp nhận ảnh (JPEG, PNG, WEBP) hoặc video (MP4, MOV)",
+        ),
+      );
+      return;
+    }
+
+    cb(null, true);
+  },
+}).single("media");
+
 // Upload file to S3
 const uploadToS3 = async (file, folderPath = "avatars") => {
   const fileExtension = path.extname(file.originalname);
@@ -94,9 +122,31 @@ const getSignedUrlFromS3 = async (key) => {
   }
 };
 
+// Get signed URL to upload file to S3 (valid for 10 minutes)
+const getSignedUploadUrlFromS3 = async (key, contentType) => {
+  if (!key || !contentType) return null;
+
+  const command = new PutObjectCommand({
+    Bucket: process.env.S3_BUCKET_NAME,
+    Key: key,
+    ContentType: contentType,
+  });
+
+  try {
+    const signedUrl = await getSignedUrl(s3Client, command, {
+      expiresIn: 600,
+    });
+    return signedUrl;
+  } catch (error) {
+    throw new Error(`Lỗi khi tạo signed upload URL: ${error.message}`);
+  }
+};
+
 module.exports = {
   multerUploads,
   multerPostMedia,
+  multerStoryMedia,
   uploadToS3,
   getSignedUrlFromS3,
+  getSignedUploadUrlFromS3,
 };

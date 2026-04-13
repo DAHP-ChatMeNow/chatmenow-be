@@ -9,11 +9,16 @@ const MessageSchema = new Schema(
       required: true,
     },
     senderId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    senderSource: {
+      type: String,
+      enum: ["user", "ai"],
+      default: "user",
+    },
 
     content: { type: String },
     type: {
       type: String,
-      enum: ["text", "image", "video", "file", "system"],
+      enum: ["text", "image", "video", "audio", "file", "system"],
       default: "text",
     },
 
@@ -30,6 +35,20 @@ const MessageSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: "Message",
       default: null,
+    },
+
+    replyPreview: {
+      content: { type: String, default: "" },
+      type: { type: String, default: "text" },
+      attachments: [
+        {
+          url: String,
+          fileType: String,
+          fileName: String,
+          fileSize: Number,
+        },
+      ],
+      senderDisplayName: { type: String, default: "" },
     },
 
     // Optional metadata for call-history system messages.
@@ -51,10 +70,22 @@ const MessageSchema = new Schema(
       duration: { type: Number, default: 0 },
       startedAt: { type: Date, default: null },
       endedAt: { type: Date, default: null },
+      participants: [
+        {
+          userId: { type: Schema.Types.ObjectId, ref: "User", default: null },
+          displayName: { type: String, default: null },
+          avatar: { type: String, default: null },
+          joinedAt: { type: Date, default: null },
+        },
+      ],
     },
 
     readBy: [{ type: Schema.Types.ObjectId, ref: "User" }],
     isUnsent: { type: Boolean, default: false },
+    unsentAt: { type: Date, default: null },
+    isEdited: { type: Boolean, default: false },
+    editedAt: { type: Date, default: null },
+    deletedFor: [{ type: Schema.Types.ObjectId, ref: "User" }],
   },
   { timestamps: true },
 );

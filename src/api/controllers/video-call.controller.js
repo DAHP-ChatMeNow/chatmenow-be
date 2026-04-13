@@ -1,31 +1,5 @@
 const videoCallService = require("../service/video-call.service");
 
-function emitCallHistoryMessage(io, result) {
-  const historyMessage = result?.historyMessage;
-  if (!historyMessage) {
-    return;
-  }
-
-  const conversationId = historyMessage.conversationId?.toString();
-  const callerId = result?.call?.callerId?._id?.toString();
-  const receiverId = result?.call?.receiverId?._id?.toString();
-
-  if (conversationId) {
-    io.to(conversationId).emit("newMessage", historyMessage);
-    io.to(conversationId).emit("message:new", historyMessage);
-  }
-
-  if (callerId) {
-    io.to(callerId).emit("newMessage", historyMessage);
-    io.to(callerId).emit("message:new", historyMessage);
-  }
-
-  if (receiverId) {
-    io.to(receiverId).emit("newMessage", historyMessage);
-    io.to(receiverId).emit("message:new", historyMessage);
-  }
-}
-
 const VideoCallController = {
   /**
    * Initiate a video call
@@ -68,6 +42,43 @@ const VideoCallController = {
   },
 
   /**
+   * Initiate a group video call
+   * POST /api/video-calls/initiate-group
+   */
+  async initiateGroupCall(req, res) {
+    try {
+      const {
+        participantIds = [],
+        callType = "video",
+        conversationId,
+      } = req.body;
+      const callerId = req.user.userId;
+
+      if (!Array.isArray(participantIds) || participantIds.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "participantIds is required and must be a non-empty array",
+        });
+      }
+
+      const result = await videoCallService.initiateGroupCall(
+        callerId,
+        participantIds,
+        callType,
+        conversationId,
+      );
+
+      return res.status(201).json(result);
+    } catch (error) {
+      console.error("Error initiating group call:", error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Failed to initiate group call",
+      });
+    }
+  },
+
+  /**
    * Accept a video call
    * POST /api/video-calls/:callId/accept
    */
@@ -104,8 +115,6 @@ const VideoCallController = {
         reason,
       );
 
-      emitCallHistoryMessage(req.app.get("io"), result);
-
       return res.status(200).json(result);
     } catch (error) {
       console.error("Error rejecting call:", error);
@@ -123,11 +132,8 @@ const VideoCallController = {
   async endCall(req, res) {
     try {
       const { callId } = req.params;
-      const endedByUserId = req.user.userId;
 
-      const result = await videoCallService.endCall(callId, endedByUserId);
-
-      emitCallHistoryMessage(req.app.get("io"), result);
+      const result = await videoCallService.endCall(callId);
 
       return res.status(200).json(result);
     } catch (error) {

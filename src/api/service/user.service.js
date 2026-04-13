@@ -6,11 +6,51 @@ const Conversation = require("../models/conversation.model");
 const Message = require("../models/message.model");
 const { formatLastSeen } = require("../../utils/last-seen.helper");
 const {
+  emitNotificationToUser,
+} = require("../../utils/realtime-notification.helper");
+const {
   CONVERSATION_TYPES,
   FRIEND_REQUEST_STATUS,
 } = require("../../constants");
 
 class UserService {
+  buildFriendRequestNotificationPayload(notification, sender, targetUrl) {
+    return {
+      ...notification.toObject(),
+      senderName: sender?.displayName || null,
+      senderAvatar: sender?.avatar || null,
+      displayText: `${sender?.displayName || "Ai đó"} đã gửi cho bạn lời mời kết bạn.`,
+      previewImage: sender?.avatar || null,
+      targetUrl,
+      isRead: false,
+    };
+  }
+
+  buildCreatedAtFilter({ date, dateFrom, dateTo }) {
+    const createdAtFilter = {};
+
+    const safeDate = (value) => {
+      if (!value) return null;
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    };
+
+    const exactDate = safeDate(date) || safeDate(dateFrom) || safeDate(dateTo);
+    if (exactDate) {
+      const start = new Date(exactDate);
+      start.setHours(0, 0, 0, 0);
+
+      const end = new Date(exactDate);
+      end.setHours(23, 59, 59, 999);
+
+      createdAtFilter.$gte = start;
+      createdAtFilter.$lte = end;
+      return createdAtFilter;
+    }
+
+    return null;
+  }
+
   async searchUsers(keyword, currentUserId) {
     if (!keyword) {
       throw {
@@ -315,6 +355,85 @@ class UserService {
     };
   }
 
+  async getBlockedUsers(userId) {
+    const user = await User.findById(userId).populate(
+      "blockedUsers",
+      "displayName avatar bio isOnline lastSeen",
+    );
+
+    if (!user) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    return {
+      blockedUsers: (user.blockedUsers || []).map((blockedUser) => ({
+        _id: blockedUser._id,
+        displayName: blockedUser.displayName,
+        avatar: blockedUser.avatar,
+        bio: blockedUser.bio,
+        isOnline: blockedUser.isOnline,
+        lastSeen: blockedUser.lastSeen,
+        lastSeenText: formatLastSeen(blockedUser.lastSeen, blockedUser.isOnline),
+      })),
+      total: (user.blockedUsers || []).length,
+    };
+  }
+
+  async blockUser(userId, blockedUserId) {
+    if (userId === blockedUserId) {
+      throw {
+        statusCode: 400,
+        message: "Không thể chặn chính mình",
+      };
+    }
+
+    const blockedUser = await User.findById(blockedUserId).select(
+      "displayName avatar",
+    );
+    if (!blockedUser) {
+      throw {
+        statusCode: 404,
+        message: "Người dùng không tồn tại",
+      };
+    }
+
+    await User.findByIdAndUpdate(userId, {
+      $addToSet: { blockedUsers: blockedUserId },
+    });
+
+    return {
+      blockedUser: {
+        _id: blockedUser._id,
+        displayName: blockedUser.displayName,
+        avatar: blockedUser.avatar,
+      },
+    };
+  }
+
+  async unblockUser(userId, blockedUserId) {
+    if (userId === blockedUserId) {
+      throw {
+        statusCode: 400,
+        message: "Không thể mở chặn chính mình",
+      };
+    }
+
+    await Promise.all([
+      User.findByIdAndUpdate(userId, {
+        $pull: { blockedUsers: blockedUserId },
+        $addToSet: { friends: blockedUserId },
+      }),
+      User.findByIdAndUpdate(blockedUserId, {
+        $addToSet: { friends: userId },
+      }),
+    ]);
+
+    return { success: true };
+  }
+
   /**
    * Gửi lời mời kết bạn
    */
@@ -326,17 +445,32 @@ class UserService {
       };
     }
 
-    // Kiểm tra người nhận có tồn tại không
-    const receiver = await User.findById(receiverId);
-    if (!receiver) {
+    const [sender, receiver] = await Promise.all([
+      User.findById(senderId).select("friends blockedUsers"),
+      User.findById(receiverId).select("friends blockedUsers"),
+    ]);
+
+    if (!receiver || !sender) {
       throw {
         statusCode: 404,
         message: "Người dùng không tồn tại",
       };
     }
 
-    // Kiểm tra đã là bạn bè chưa
-    const sender = await User.findById(senderId);
+    const senderBlocked = (sender.blockedUsers || []).some(
+      (id) => id.toString() === receiverId,
+    );
+    const receiverBlocked = (receiver.blockedUsers || []).some(
+      (id) => id.toString() === senderId,
+    );
+
+    if (senderBlocked || receiverBlocked) {
+      throw {
+        statusCode: 403,
+        message: "Không thể gửi lời mời cho người dùng đã bị chặn",
+      };
+    }
+
     if (sender.friends.includes(receiverId)) {
       throw {
         statusCode: 400,
@@ -382,13 +516,22 @@ class UserService {
         await existingRequest.save();
 
         // Tạo thông báo
-        await Notification.create({
+        const notification = await Notification.create({
           recipientId: receiverId,
           senderId: senderId,
           type: "friend_request",
           referenced: existingRequest._id,
           message: "đã gửi cho bạn lời mời kết bạn.",
         });
+
+        emitNotificationToUser(
+          receiverId,
+          this.buildFriendRequestNotificationPayload(
+            notification,
+            sender,
+            `/friends/requests/${existingRequest._id}`,
+          ),
+        );
 
         return existingRequest;
       }
@@ -398,13 +541,22 @@ class UserService {
     const newRequest = await FriendRequest.create({ senderId, receiverId });
 
     // Tạo thông báo
-    await Notification.create({
+    const notification = await Notification.create({
       recipientId: receiverId,
       senderId: senderId,
       type: "friend_request",
       referenced: newRequest._id,
       message: "đã gửi cho bạn lời mời kết bạn.",
     });
+
+    emitNotificationToUser(
+      receiverId,
+      this.buildFriendRequestNotificationPayload(
+        notification,
+        sender,
+        `/friends/requests/${newRequest._id}`,
+      ),
+    );
 
     return newRequest;
   }
@@ -494,7 +646,7 @@ class UserService {
     const receiverId = users[0]._id;
 
     // Kiểm tra đã là bạn bè chưa
-    const sender = await User.findById(senderId);
+    const sender = await User.findById(senderId).select("friends blockedUsers");
     if (sender.friends.includes(receiverId)) {
       throw {
         statusCode: 400,
@@ -514,6 +666,21 @@ class UserService {
         { senderId: receiverId, receiverId: senderId },
       ],
     });
+
+    const receiver = await User.findById(receiverId).select("blockedUsers");
+    const senderBlocked = (sender.blockedUsers || []).some(
+      (id) => id.toString() === receiverId,
+    );
+    const receiverBlocked = (receiver?.blockedUsers || []).some(
+      (id) => id.toString() === senderId,
+    );
+
+    if (senderBlocked || receiverBlocked) {
+      throw {
+        statusCode: 403,
+        message: "Không thể gửi lời mời cho người dùng đã bị chặn",
+      };
+    }
 
     if (existingRequest) {
       // Nếu người kia đã gửi lời mời cho mình (pending)
@@ -556,13 +723,22 @@ class UserService {
         await existingRequest.save();
 
         // Tạo thông báo
-        await Notification.create({
+        const notification = await Notification.create({
           recipientId: receiverId,
           senderId: senderId,
           type: "friend_request",
           referenced: existingRequest._id,
           message: "đã gửi cho bạn lời mời kết bạn.",
         });
+
+        emitNotificationToUser(
+          receiverId,
+          this.buildFriendRequestNotificationPayload(
+            notification,
+            sender,
+            `/friends/requests/${existingRequest._id}`,
+          ),
+        );
 
         return {
           multiple: false,
@@ -582,13 +758,22 @@ class UserService {
     const newRequest = await FriendRequest.create({ senderId, receiverId });
 
     // Tạo thông báo
-    await Notification.create({
+    const notification = await Notification.create({
       recipientId: receiverId,
       senderId: senderId,
       type: "friend_request",
       referenced: newRequest._id,
       message: "đã gửi cho bạn lời mời kết bạn.",
     });
+
+    emitNotificationToUser(
+      receiverId,
+      this.buildFriendRequestNotificationPayload(
+        notification,
+        sender,
+        `/friends/requests/${newRequest._id}`,
+      ),
+    );
 
     return {
       multiple: false,
@@ -662,6 +847,19 @@ class UserService {
         }),
         conversationPromise,
       ]);
+
+      const senderUser =
+        await User.findById(userId).select("displayName avatar");
+      emitNotificationToUser(senderId, {
+        type: "system",
+        senderId: userId,
+        senderName: senderUser?.displayName || null,
+        senderAvatar: senderUser?.avatar || null,
+        displayText: `${senderUser?.displayName || "Ai đó"} đã chấp nhận lời mời kết bạn.`,
+        previewImage: senderUser?.avatar || null,
+        targetUrl: `/users/${userId}`,
+        isRead: false,
+      });
     }
 
     return { status };
@@ -713,6 +911,21 @@ class UserService {
 
     const senderId = request.senderId;
 
+    let conversation = await Conversation.findOne({
+      type: CONVERSATION_TYPES.PRIVATE,
+      $and: [
+        { members: { $elemMatch: { userId } } },
+        { members: { $elemMatch: { userId: senderId } } },
+      ],
+    }).select("_id type members updatedAt");
+
+    if (!conversation) {
+      conversation = await Conversation.create({
+        type: CONVERSATION_TYPES.PRIVATE,
+        members: [{ userId }, { userId: senderId }],
+      });
+    }
+
     // Lấy thông tin của cả 2 users
     const [sender, receiver] = await Promise.all([
       User.findById(senderId).select("displayName avatar bio isOnline"),
@@ -727,11 +940,25 @@ class UserService {
       }),
     ]);
 
+    const receiverUser =
+      await User.findById(userId).select("displayName avatar");
+    emitNotificationToUser(senderId, {
+      type: "system",
+      senderId: userId,
+      senderName: receiverUser?.displayName || null,
+      senderAvatar: receiverUser?.avatar || null,
+      displayText: `${receiverUser?.displayName || "Ai đó"} đã chấp nhận lời mời kết bạn.`,
+      previewImage: receiverUser?.avatar || null,
+      targetUrl: `/users/${userId}`,
+      isRead: false,
+    });
+
     return {
       success: true,
       senderId: senderId,
       senderInfo: sender,
       receiverInfo: receiver,
+      conversationId: String(conversation._id),
     };
   }
 
@@ -863,30 +1090,114 @@ class UserService {
 
   /**
    * Lấy danh sách tất cả người dùng (chỉ admin)
+   * Hỗ trợ filter + sort + offset/limit.
    */
-  async getAllUsers({ page = 1, limit = 20, search = "" }) {
-    const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
-    const skip = (pageNum - 1) * limitNum;
+  async getAllUsers({
+    offset,
+    limit = 20,
+    page,
+    search = "",
+    role = "all",
+    status = "all",
+    sortBy = "newest",
+    date,
+    dateFrom,
+    dateTo,
+  }) {
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
 
-    // Build filter
-    const filter = {};
-    if (search) {
-      filter.displayName = { $regex: search, $options: "i" };
+    // Backward compatibility: nếu không truyền offset thì dùng page/limit như cũ.
+    let offsetNum;
+    if (offset !== undefined) {
+      offsetNum = Math.max(0, parseInt(offset, 10) || 0);
+    } else {
+      const pageNum = Math.max(1, parseInt(page, 10) || 1);
+      offsetNum = (pageNum - 1) * limitNum;
     }
 
+    const userFilter = {};
+    const accountFilter = {};
+    if (role && role !== "all") {
+      accountFilter.role = role;
+    }
+
+    // status UI: all | active | inactive | premium
+    if (status && status !== "all") {
+      if (status === "active") {
+        accountFilter.accountStatus = "active";
+      } else if (status === "inactive") {
+        accountFilter.accountStatus = { $in: ["suspended", "locked"] };
+      } else if (status === "premium") {
+        accountFilter.isPremium = true;
+      }
+    }
+
+    const hasAccountConstraint = Object.keys(accountFilter).length > 0;
+    if (hasAccountConstraint) {
+      const constrainedAccounts =
+        await Account.find(accountFilter).select("_id");
+      const constrainedAccountIds = constrainedAccounts.map((acc) => acc._id);
+      userFilter.accountId = { $in: constrainedAccountIds };
+    }
+
+    if (search && search.trim()) {
+      const keyword = search.trim();
+      const accountSearchFilter = {
+        ...accountFilter,
+        $or: [
+          { email: { $regex: keyword, $options: "i" } },
+          { phoneNumber: { $regex: keyword, $options: "i" } },
+        ],
+      };
+
+      const matchedAccountsByContact =
+        await Account.find(accountSearchFilter).select("_id");
+
+      const matchedAccountIdsByContact = matchedAccountsByContact.map(
+        (acc) => acc._id,
+      );
+
+      userFilter.$or = [
+        { displayName: { $regex: keyword, $options: "i" } },
+        { accountId: { $in: matchedAccountIdsByContact } },
+      ];
+    }
+
+    const createdAtFilter = this.buildCreatedAtFilter({
+      date,
+      dateFrom,
+      dateTo,
+    });
+
+    if (createdAtFilter) {
+      userFilter.createdAt = createdAtFilter;
+    }
+
+    const sortMap = {
+      newest: { createdAt: -1 },
+      oldest: { createdAt: 1 },
+      name_asc: { displayName: 1 },
+      name_desc: { displayName: -1 },
+      online_first: { isOnline: -1, lastSeen: -1 },
+    };
+
+    const finalSort = sortMap[sortBy] || sortMap.newest;
+
     const [users, total] = await Promise.all([
-      User.find(filter)
+      User.find(userFilter)
         .populate(
           "accountId",
-          "email phoneNumber role isPremium premiumExpiryDate isActive createdAt",
+          "email phoneNumber role isPremium premiumExpiryDate isActive accountStatus suspendedUntil statusReason createdAt",
         )
         .select("displayName avatar bio isOnline lastSeen createdAt")
-        .sort({ createdAt: -1 })
-        .skip(skip)
+        .sort(finalSort)
+        .skip(offsetNum)
         .limit(limitNum),
-      User.countDocuments(filter),
+      User.countDocuments(userFilter),
     ]);
+
+    const pageCurrent = Math.floor(offsetNum / limitNum) + 1;
+    const totalPages = Math.ceil(total / limitNum);
 
     return {
       users: users.map((user) => ({
@@ -901,12 +1212,99 @@ class UserService {
         phoneNumber: user.accountId?.phoneNumber || "",
         role: user.accountId?.role || "user",
         isPremium: user.accountId?.isPremium || false,
-        isActive: user.accountId?.isActive ?? true,
+        isActive: user.accountId?.accountStatus === "active",
+        accountStatus: user.accountId?.accountStatus || "active",
+        suspendedUntil: user.accountId?.suspendedUntil || null,
+        statusReason: user.accountId?.statusReason || "",
         createdAt: user.createdAt,
       })),
       total,
-      page: pageNum,
-      totalPages: Math.ceil(total / limitNum),
+      offset: offsetNum,
+      limit: limitNum,
+      page: pageCurrent,
+      totalPages,
+      hasNext: offsetNum + limitNum < total,
+      hasPrev: offsetNum > 0,
+      filters: {
+        search: search || "",
+        role,
+        status,
+        sortBy,
+        date: date || "",
+        dateFrom: dateFrom || "",
+        dateTo: dateTo || "",
+      },
+    };
+  }
+
+  async updateAccountStatus(
+    userId,
+    { accountStatus, suspendedUntil, statusReason },
+  ) {
+    const user = await User.findById(userId).select(
+      "accountId displayName avatar",
+    );
+
+    if (!user) {
+      throw {
+        statusCode: 404,
+        message: "Người dùng không tồn tại",
+      };
+    }
+
+    const account = await Account.findById(user.accountId);
+
+    if (!account) {
+      throw {
+        statusCode: 404,
+        message: "Tài khoản không tồn tại",
+      };
+    }
+
+    if (!["active", "suspended", "locked"].includes(accountStatus)) {
+      throw {
+        statusCode: 400,
+        message: "Trạng thái tài khoản không hợp lệ",
+      };
+    }
+
+    const updateData = {
+      accountStatus,
+      isActive: accountStatus === "active",
+      statusReason: statusReason || "",
+      statusUpdatedAt: new Date(),
+    };
+
+    if (accountStatus === "suspended") {
+      const parsedUntil = suspendedUntil ? new Date(suspendedUntil) : null;
+      if (!parsedUntil || Number.isNaN(parsedUntil.getTime())) {
+        throw {
+          statusCode: 400,
+          message:
+            "Vui lòng cung cấp suspendedUntil hợp lệ cho trạng thái đình chỉ",
+        };
+      }
+
+      updateData.suspendedUntil = parsedUntil;
+    } else {
+      updateData.suspendedUntil = null;
+    }
+
+    await Account.findByIdAndUpdate(account._id, updateData, {
+      new: true,
+      runValidators: true,
+    });
+
+    return {
+      _id: user._id,
+      email: account.email,
+      role: account.role,
+      accountStatus: accountStatus,
+      suspendedUntil: updateData.suspendedUntil,
+      statusReason: updateData.statusReason,
+      isActive: updateData.isActive,
+      displayName: user.displayName,
+      avatar: user.avatar,
     };
   }
 }

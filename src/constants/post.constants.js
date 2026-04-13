@@ -1,6 +1,7 @@
 const POST_PRIVACY = {
   PUBLIC: "public",
   FRIENDS: "friends",
+  CUSTOM: "custom",
   PRIVATE: "private",
 };
 

@@ -37,14 +37,21 @@ npm start
 Create a `.env` file in the root:
 
 ```env
-PORT=3000
+PORT=5000
 MONGO_URI=your_mongodb_uri
 JWT_SECRET=your_jwt_secret
+API_KEY=your_api_key
+ALLOWED_ORIGINS=http://localhost:3000
 
 AWS_ACCESS_KEY_ID=your_key
 AWS_SECRET_ACCESS_KEY=your_secret
 S3_BUCKET_NAME=your_bucket
 AWS_REGION=ap-southeast-1
+
+LIVEKIT_URL=ws://localhost:7880
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=devsecret
+NEXT_PUBLIC_ENABLE_CALL=false
 ```
 
 ### Run project
@@ -59,6 +66,23 @@ make logs       # Tail container logs
 make status     # Check container status
 make clean      # Remove container & image
 ```
+
+### LiveKit (SFU) Production Deployment
+
+```bash
+# Start backend + LiveKit
+docker compose up -d --build
+
+# Logs
+docker compose logs -f backend
+docker compose logs -f livekit
+```
+
+Reference files:
+- `docker-compose.yml`
+- `livekit.yaml`
+- `nginx/livekit.conf`
+- `docs/livekit-migration.md`
 
 ## CI/CD
 
@@ -88,3 +112,4 @@ GitHub Actions pipeline (`.github/workflows/ci-cd.yml`):
 | `/api/chat`          | Conversations & messages |
 | `/api/notifications` | Notifications            |
 | `/api/upload`        | File upload              |
+| `/api/livekit-token` | Generate LiveKit token   |

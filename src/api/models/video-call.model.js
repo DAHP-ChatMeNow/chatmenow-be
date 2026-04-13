@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const {
   CALL_TYPE,
+  CALL_MODE,
   VIDEO_CALL_STATUS,
 } = require("../../constants/video-call.constants");
 
@@ -14,8 +15,31 @@ const videoCallSchema = new mongoose.Schema(
     receiverId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      default: null,
     },
+    callMode: {
+      type: String,
+      enum: Object.values(CALL_MODE),
+      default: CALL_MODE.DIRECT,
+    },
+    participantIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+    acceptedParticipantIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+    rejectedParticipantIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
     callType: {
       type: String,
       enum: Object.values(CALL_TYPE),
@@ -52,6 +76,7 @@ const videoCallSchema = new mongoose.Schema(
 // Index for queries
 videoCallSchema.index({ callerId: 1, createdAt: -1 });
 videoCallSchema.index({ receiverId: 1, createdAt: -1 });
+videoCallSchema.index({ participantIds: 1, createdAt: -1 });
 videoCallSchema.index({ status: 1 });
 
 module.exports = mongoose.model("VideoCall", videoCallSchema);

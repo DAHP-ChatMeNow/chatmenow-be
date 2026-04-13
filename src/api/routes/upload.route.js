@@ -6,6 +6,7 @@ const {
   uploadImage,
   deleteAvatar,
   getPresignedUrl,
+  getChatAttachmentUploadUrl,
 } = require("../controllers/upload.controller");
 
 router.post("/avatar", authMiddleware, multerUploads, uploadImage);
@@ -13,5 +14,6 @@ router.post("/avatar", authMiddleware, multerUploads, uploadImage);
 router.delete("/avatar", authMiddleware, deleteAvatar);
 
 router.get("/presign-get", authMiddleware, getPresignedUrl);
+router.post("/chat/presign-put", authMiddleware, getChatAttachmentUploadUrl);
 
 module.exports = router;

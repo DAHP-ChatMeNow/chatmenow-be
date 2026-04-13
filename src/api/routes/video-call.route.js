@@ -13,6 +13,12 @@ router.use(authMiddleware);
 router.post("/initiate", videoCallController.initiateCall);
 
 /**
+ * POST /api/video-calls/initiate-group
+ * Initiate a new group video call
+ */
+router.post("/initiate-group", videoCallController.initiateGroupCall);
+
+/**
  * POST /api/video-calls/:callId/accept
  * Accept incoming video call
  */
