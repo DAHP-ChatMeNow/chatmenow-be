@@ -53,7 +53,13 @@ router.delete(
   postController.deletePostForAdmin,
 );
 
+router.get("/user/:userId", verifyToken, postController.getUserPosts);
+
 router.get("/:id", verifyToken, postController.getPostDetail);
+
+router.patch("/:id/privacy", verifyToken, postController.updateMyPostPrivacy);
+
+router.delete("/:id", verifyToken, postController.deleteMyPost);
 
 router.put("/:id/like", verifyToken, postController.toggleLikePost);
 
