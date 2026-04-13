@@ -92,6 +92,25 @@ exports.getPostDetail = async (req, res) => {
   }
 };
 
+exports.getOriginalPostTarget = async (req, res) => {
+  try {
+    const result = await postService.getOriginalPostTarget(
+      req.params.id,
+      req.user.userId,
+    );
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.getAllPostsForAdmin = async (req, res) => {
   try {
     const result = await postService.getAllPostsForAdmin(req.query || {});

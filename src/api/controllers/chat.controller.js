@@ -25,6 +25,25 @@ exports.getConversations = async (req, res) => {
   }
 };
 
+exports.getShareTargets = async (req, res) => {
+  try {
+    const result = await chatService.getShareTargets(req.user.userId, {
+      q: req.query.q,
+      limit: req.query.limit,
+    });
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.getOrCreateAiConversation = async (req, res) => {
   try {
     const conversation = await aiService.getOrCreateAiConversation(
@@ -912,4 +931,3 @@ exports.unpinMessage = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
-

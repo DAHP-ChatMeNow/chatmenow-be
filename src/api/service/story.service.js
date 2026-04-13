@@ -4,6 +4,34 @@ const { uploadToS3, getSignedUrlFromS3 } = require("../middleware/storage");
 const { STORY_PRIVACY, STORY_SETTINGS } = require("../../constants/story.constants");
 
 class StoryService {
+  async appendVideoViewHistory(userId, sourceType, sourceId) {
+    const user = await User.findById(userId).select("videoViewHistory");
+    if (!user) return;
+
+    const history = Array.isArray(user.videoViewHistory)
+      ? [...user.videoViewHistory]
+      : [];
+    const existingIndex = history.findIndex(
+      (item) =>
+        String(item?.sourceType || "") === String(sourceType) &&
+        String(item?.sourceId || "") === String(sourceId),
+    );
+
+    if (existingIndex >= 0) {
+      history.splice(existingIndex, 1);
+    }
+
+    history.unshift({
+      sourceType,
+      sourceId,
+      viewedAt: new Date(),
+    });
+
+    user.videoViewHistory = history.slice(0, 200);
+    user.markModified("videoViewHistory");
+    await user.save();
+  }
+
   async resolveStoryMedia(storyObj) {
     if (!storyObj?.media?.url) return storyObj;
 
@@ -272,6 +300,10 @@ class StoryService {
     await Story.findByIdAndUpdate(storyId, {
       $addToSet: { viewedBy: userId },
     });
+
+    if (story.media?.type === "video") {
+      await this.appendVideoViewHistory(userId, "story", storyId);
+    }
 
     return { success: true };
   }

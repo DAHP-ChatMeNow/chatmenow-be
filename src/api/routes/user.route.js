@@ -16,6 +16,23 @@ router.put(
 );
 
 router.get("/search", verifyToken, userController.searchUsers);
+router.get(
+  "/activity-history",
+  verifyToken,
+  userController.getInteractionHistory,
+);
+router.get("/search-history", verifyToken, userController.getSearchHistory);
+router.delete("/search-history", verifyToken, userController.clearSearchHistory);
+router.get(
+  "/profile-visit-history",
+  verifyToken,
+  userController.getProfileVisitHistory,
+);
+router.delete(
+  "/profile-visit-history",
+  verifyToken,
+  userController.clearProfileVisitHistory,
+);
 
 // Lấy email và SĐT của user hiện tại
 router.get("/me/email", verifyToken, userController.getUserEmail);
