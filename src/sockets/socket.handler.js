@@ -7,6 +7,7 @@ const aiSummaryService = require("../api/service/ai-summary.service");
 // Presence tracking for multi-device / multi-tab support
 const userSocketsMap = new Map(); // userId -> Set<socketId>
 const socketUserMap = new Map(); // socketId -> userId
+const roomParticipantsMap = new Map(); // roomId -> Map<userId, participantSnapshot>
 
 async function persistCallHistoryMessage(io, payload) {
   const {
@@ -17,6 +18,8 @@ async function persistCallHistoryMessage(io, payload) {
     duration = 0,
     startedAt = null,
     endedAt = null,
+    content = null,
+    participants = [],
   } = payload || {};
 
   if (!conversationId || !senderId || !status) {
@@ -31,7 +34,7 @@ async function persistCallHistoryMessage(io, payload) {
   let historyMessage = await Message.create({
     conversationId,
     senderId,
-    content: status,
+    content: content || status,
     type: "system",
     callInfo: {
       callType: safeCallType,
@@ -39,6 +42,7 @@ async function persistCallHistoryMessage(io, payload) {
       duration: safeDuration,
       startedAt,
       endedAt,
+      participants: Array.isArray(participants) ? participants : [],
     },
   });
 
@@ -49,7 +53,7 @@ async function persistCallHistoryMessage(io, payload) {
 
   await Conversation.findByIdAndUpdate(conversationId, {
     lastMessage: {
-      content: status,
+      content: content || status,
       senderId,
       senderName: "Hệ thống",
       type: "system",
@@ -77,10 +81,72 @@ async function persistCallHistoryMessage(io, payload) {
   return historyMessage;
 }
 
+async function getParticipantSnapshot(userId, joinedAt = null) {
+  if (!userId) return null;
+
+  const user = await User.findById(userId).select("displayName avatar").lean();
+  if (!user) return null;
+
+  return {
+    userId: user._id,
+    displayName: user.displayName || null,
+    avatar: user.avatar || null,
+    joinedAt,
+  };
+}
+
+async function registerRoomParticipant(roomId, userId, joinedAt = new Date()) {
+  if (!roomId || !userId) {
+    return [];
+  }
+
+  const normalizedRoomId = String(roomId);
+  const normalizedUserId = String(userId);
+
+  const participantSnapshot = await getParticipantSnapshot(
+    normalizedUserId,
+    joinedAt,
+  );
+
+  if (!participantSnapshot) {
+    return [];
+  }
+
+  const participants = roomParticipantsMap.get(normalizedRoomId) || new Map();
+  participants.set(normalizedUserId, participantSnapshot);
+  roomParticipantsMap.set(normalizedRoomId, participants);
+
+  return Array.from(participants.values());
+}
+
+function getRoomParticipants(roomId) {
+  if (!roomId) return [];
+  const participants = roomParticipantsMap.get(String(roomId));
+  return participants ? Array.from(participants.values()) : [];
+}
+
+function clearRoomParticipants(roomId) {
+  if (!roomId) return;
+  roomParticipantsMap.delete(String(roomId));
+}
+
 function initializeSocket(io) {
   const emitToUser = (userId, eventName, payload) => {
     if (!userId) return;
     io.to(String(userId)).emit(eventName, payload);
+  };
+
+  const emitToUsers = (userIds = [], eventName, payloadFactory) => {
+    if (!Array.isArray(userIds)) return;
+
+    for (const userId of userIds) {
+      if (!userId) continue;
+      const payload =
+        typeof payloadFactory === "function"
+          ? payloadFactory(String(userId))
+          : payloadFactory;
+      io.to(String(userId)).emit(eventName, payload);
+    }
   };
 
   io.on("connection", (socket) => {
@@ -257,28 +323,112 @@ function initializeSocket(io) {
       });
     });
 
+    // Additive group-call signaling event, kept separate from existing 1-1 flow.
+    socket.on("call-group", (data = {}) => {
+      const fromUserId = socket.data.userId || data.fromUserId;
+      const {
+        toUserIds = [],
+        roomId,
+        conversationId,
+        callType = "video",
+      } = data;
+
+      if (!fromUserId || !roomId || !Array.isArray(toUserIds)) {
+        socket.emit("call-error", {
+          message: "Thiếu dữ liệu gọi nhóm (fromUserId, toUserIds[], roomId)",
+        });
+        return;
+      }
+
+      const normalizedToUserIds = [...new Set(toUserIds.map(String))].filter(
+        (userId) => userId && userId !== String(fromUserId),
+      );
+
+      if (normalizedToUserIds.length === 0) {
+        socket.emit("call-error", {
+          message: "Danh sách người nhận cuộc gọi nhóm không hợp lệ",
+        });
+        return;
+      }
+
+      const createdAt = new Date().toISOString();
+
+      emitToUsers(
+        normalizedToUserIds,
+        "incoming-group-call",
+        (targetUserId) => ({
+          fromUserId: String(fromUserId),
+          toUserId: targetUserId,
+          toUserIds: normalizedToUserIds,
+          roomId,
+          conversationId,
+          callType,
+          createdAt,
+        }),
+      );
+    });
+
     socket.on("accept-call", async (data = {}) => {
       try {
         const fromUserId = socket.data.userId || data.fromUserId;
-        const { toUserId, roomId, conversationId, callType = "video" } = data;
+        const {
+          toUserId,
+          toUserIds = [],
+          roomId,
+          conversationId,
+          callType = "video",
+          callMode = null,
+        } = data;
 
-        if (!fromUserId || !toUserId || !roomId) {
+        if (
+          !fromUserId ||
+          !roomId ||
+          (!toUserId && (!Array.isArray(toUserIds) || toUserIds.length === 0))
+        ) {
           socket.emit("call-error", {
-            message: "Thiếu dữ liệu accept-call (fromUserId, toUserId, roomId)",
+            message:
+              "Thiếu dữ liệu accept-call (fromUserId, roomId, toUserId|toUserIds)",
           });
           return;
         }
 
         const acceptedAt = new Date();
 
-        emitToUser(toUserId, "call-accepted", {
+        const targetUserIds =
+          Array.isArray(toUserIds) && toUserIds.length > 0
+            ? [...new Set(toUserIds.map(String))]
+            : [String(toUserId)];
+
+        emitToUsers(targetUserIds, "call-accepted", (targetUserId) => ({
           fromUserId: String(fromUserId),
-          toUserId: String(toUserId),
+          toUserId: String(targetUserId),
+          toUserIds: targetUserIds,
           roomId,
           conversationId,
           callType,
           acceptedAt: acceptedAt.toISOString(),
-        });
+        }));
+
+        const participants = await registerRoomParticipant(
+          roomId,
+          fromUserId,
+          acceptedAt,
+        );
+
+        const isGroupCall =
+          callMode === "group" ||
+          (Array.isArray(toUserIds) && toUserIds.length > 1);
+
+        let joinContent = null;
+        if (isGroupCall) {
+          const joinedUser = participants.find(
+            (participant) => String(participant.userId) === String(fromUserId),
+          );
+
+          if (joinedUser?.displayName) {
+            joinContent = `${joinedUser.displayName} da tham gia cuoc goi`;
+          }
+        }
 
         await persistCallHistoryMessage(io, {
           conversationId,
@@ -286,6 +436,7 @@ function initializeSocket(io) {
           status: "accepted",
           callType,
           startedAt: acceptedAt,
+          content: joinContent,
         });
       } catch (error) {
         socket.emit("call-error", { message: "Lỗi khi xử lý accept-call" });
@@ -339,30 +490,44 @@ function initializeSocket(io) {
         const fromUserId = socket.data.userId || data.fromUserId;
         const {
           toUserId,
+          toUserIds = [],
           roomId,
           conversationId,
           callType = "video",
           duration = 0,
         } = data;
 
-        if (!fromUserId || !toUserId || !roomId) {
+        if (
+          !fromUserId ||
+          !roomId ||
+          (!toUserId && (!Array.isArray(toUserIds) || toUserIds.length === 0))
+        ) {
           socket.emit("call-error", {
-            message: "Thiếu dữ liệu end-call (fromUserId, toUserId, roomId)",
+            message:
+              "Thiếu dữ liệu end-call (fromUserId, roomId, toUserId|toUserIds)",
           });
           return;
         }
 
         const endedAt = new Date();
 
-        emitToUser(toUserId, "call-ended", {
+        const targetUserIds =
+          Array.isArray(toUserIds) && toUserIds.length > 0
+            ? [...new Set(toUserIds.map(String))]
+            : [String(toUserId)];
+
+        emitToUsers(targetUserIds, "call-ended", (targetUserId) => ({
           fromUserId: String(fromUserId),
-          toUserId: String(toUserId),
+          toUserId: String(targetUserId),
+          toUserIds: targetUserIds,
           roomId,
           conversationId,
           callType,
           duration,
           endedAt: endedAt.toISOString(),
-        });
+        }));
+
+        const participants = getRoomParticipants(roomId);
 
         await persistCallHistoryMessage(io, {
           conversationId,
@@ -371,7 +536,10 @@ function initializeSocket(io) {
           callType,
           duration,
           endedAt,
+          participants,
         });
+
+        clearRoomParticipants(roomId);
       } catch (error) {
         socket.emit("call-error", { message: "Lỗi khi xử lý end-call" });
       }

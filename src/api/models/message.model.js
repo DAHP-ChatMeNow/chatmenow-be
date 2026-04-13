@@ -56,6 +56,14 @@ const MessageSchema = new Schema(
       duration: { type: Number, default: 0 },
       startedAt: { type: Date, default: null },
       endedAt: { type: Date, default: null },
+      participants: [
+        {
+          userId: { type: Schema.Types.ObjectId, ref: "User", default: null },
+          displayName: { type: String, default: null },
+          avatar: { type: String, default: null },
+          joinedAt: { type: Date, default: null },
+        },
+      ],
     },
 
     readBy: [{ type: Schema.Types.ObjectId, ref: "User" }],

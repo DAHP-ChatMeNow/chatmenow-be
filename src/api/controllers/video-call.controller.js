@@ -42,6 +42,43 @@ const VideoCallController = {
   },
 
   /**
+   * Initiate a group video call
+   * POST /api/video-calls/initiate-group
+   */
+  async initiateGroupCall(req, res) {
+    try {
+      const {
+        participantIds = [],
+        callType = "video",
+        conversationId,
+      } = req.body;
+      const callerId = req.user.userId;
+
+      if (!Array.isArray(participantIds) || participantIds.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "participantIds is required and must be a non-empty array",
+        });
+      }
+
+      const result = await videoCallService.initiateGroupCall(
+        callerId,
+        participantIds,
+        callType,
+        conversationId,
+      );
+
+      return res.status(201).json(result);
+    } catch (error) {
+      console.error("Error initiating group call:", error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Failed to initiate group call",
+      });
+    }
+  },
+
+  /**
    * Accept a video call
    * POST /api/video-calls/:callId/accept
    */

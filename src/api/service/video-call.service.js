@@ -2,11 +2,36 @@ const VideoCall = require("../models/video-call.model");
 const User = require("../models/user.model");
 const Notification = require("../models/notification.model");
 const {
+  CALL_MODE,
   VIDEO_CALL_STATUS,
   REJECTION_REASON,
 } = require("../../constants/video-call.constants");
 
 class VideoCallService {
+  async populateCall(call) {
+    return call.populate([
+      { path: "callerId", select: "displayName avatar email" },
+      { path: "receiverId", select: "displayName avatar email" },
+      { path: "participantIds", select: "displayName avatar email" },
+      {
+        path: "acceptedParticipantIds",
+        select: "displayName avatar email",
+      },
+      {
+        path: "rejectedParticipantIds",
+        select: "displayName avatar email",
+      },
+    ]);
+  }
+
+  normalizeParticipantIds(participantIds = []) {
+    if (!Array.isArray(participantIds)) {
+      return [];
+    }
+
+    return [...new Set(participantIds.map(String).filter(Boolean))];
+  }
+
   /**
    * Initiate video call
    */
@@ -29,16 +54,15 @@ class VideoCallService {
       const videoCall = new VideoCall({
         callerId,
         receiverId,
+        callMode: CALL_MODE.DIRECT,
+        participantIds: [receiverId],
         status: VIDEO_CALL_STATUS.INITIATED,
         callType,
         conversationId,
       });
 
       const savedCall = await videoCall.save();
-      const populatedCall = await savedCall.populate([
-        { path: "callerId", select: "displayName avatar email" },
-        { path: "receiverId", select: "displayName avatar email" },
-      ]);
+      const populatedCall = await this.populateCall(savedCall);
 
       // Create notification for receiver
       await Notification.create({
@@ -60,29 +84,116 @@ class VideoCallService {
   }
 
   /**
+   * Initiate group call (additive API, does not alter direct-call flow)
+   */
+  async initiateGroupCall(
+    callerId,
+    participantIds = [],
+    callType = "video",
+    conversationId = null,
+  ) {
+    try {
+      const caller = await User.findById(callerId);
+      if (!caller) {
+        throw new Error("Caller not found");
+      }
+
+      const normalizedParticipantIds = this.normalizeParticipantIds(
+        participantIds,
+      ).filter((id) => id !== String(callerId));
+
+      if (normalizedParticipantIds.length === 0) {
+        throw new Error("At least one participant is required");
+      }
+
+      const participants = await User.find({
+        _id: { $in: normalizedParticipantIds },
+      }).select("_id displayName");
+
+      if (participants.length !== normalizedParticipantIds.length) {
+        throw new Error("One or more participants not found");
+      }
+
+      const videoCall = new VideoCall({
+        callerId,
+        receiverId: null,
+        callMode: CALL_MODE.GROUP,
+        participantIds: normalizedParticipantIds,
+        status: VIDEO_CALL_STATUS.INITIATED,
+        callType,
+        conversationId,
+      });
+
+      const savedCall = await videoCall.save();
+      const populatedCall = await this.populateCall(savedCall);
+
+      await Notification.insertMany(
+        normalizedParticipantIds.map((participantId) => ({
+          recipientId: participantId,
+          senderId: callerId,
+          type: "video_call",
+          referenceId: populatedCall._id,
+          message: `${caller.displayName} đã mời bạn tham gia cuộc gọi nhóm`,
+          isRead: false,
+        })),
+      );
+
+      return {
+        success: true,
+        call: populatedCall,
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  /**
    * Accept video call
    */
   async acceptCall(callId, receiverId) {
     try {
-      const videoCall = await VideoCall.findByIdAndUpdate(
-        callId,
-        {
-          status: VIDEO_CALL_STATUS.ACCEPTED,
-          startedAt: new Date(),
-        },
-        { new: true },
-      ).populate([
-        { path: "callerId", select: "displayName avatar email" },
-        { path: "receiverId", select: "displayName avatar email" },
-      ]);
+      const existingCall = await VideoCall.findById(callId);
 
-      if (!videoCall) {
+      if (!existingCall) {
         throw new Error("Video call not found");
       }
 
+      const isDirectReceiver =
+        existingCall.receiverId &&
+        String(existingCall.receiverId) === String(receiverId);
+      const isGroupParticipant = (existingCall.participantIds || []).some(
+        (participantId) => String(participantId) === String(receiverId),
+      );
+
+      if (!isDirectReceiver && !isGroupParticipant) {
+        throw new Error("You are not a participant of this call");
+      }
+
+      const update = {
+        $set: {
+          status: VIDEO_CALL_STATUS.ACCEPTED,
+        },
+        $addToSet: {
+          acceptedParticipantIds: receiverId,
+        },
+        $pull: {
+          rejectedParticipantIds: receiverId,
+        },
+      };
+
+      if (!existingCall.startedAt) {
+        update.$set.startedAt = new Date();
+      }
+
+      const videoCall = await VideoCall.findByIdAndUpdate(callId, update, {
+        new: true,
+      });
+
+      const populatedCall = await this.populateCall(videoCall);
+
       return {
         success: true,
-        call: videoCall,
+        call: populatedCall,
       };
     } catch (error) {
       throw error;
@@ -92,27 +203,56 @@ class VideoCallService {
   /**
    * Reject video call
    */
-  async rejectCall(callId, receiverId, reason = REJECTION_REASON.DECLINED) {
+  async rejectCall(callId, receiverId, _reason = REJECTION_REASON.DECLINED) {
     try {
-      const videoCall = await VideoCall.findByIdAndUpdate(
-        callId,
-        {
-          status: VIDEO_CALL_STATUS.REJECTED,
-          endedAt: new Date(),
-        },
-        { new: true },
-      ).populate([
-        { path: "callerId", select: "displayName avatar email" },
-        { path: "receiverId", select: "displayName avatar email" },
-      ]);
-
-      if (!videoCall) {
+      const existingCall = await VideoCall.findById(callId);
+      if (!existingCall) {
         throw new Error("Video call not found");
       }
 
+      const isDirectReceiver =
+        existingCall.receiverId &&
+        String(existingCall.receiverId) === String(receiverId);
+      const isGroupParticipant = (existingCall.participantIds || []).some(
+        (participantId) => String(participantId) === String(receiverId),
+      );
+
+      if (!isDirectReceiver && !isGroupParticipant) {
+        throw new Error("You are not a participant of this call");
+      }
+
+      const endedAt = new Date();
+      const totalParticipants = (existingCall.participantIds || []).length;
+      const existingRejectedCount = (existingCall.rejectedParticipantIds || [])
+        .map(String)
+        .filter((id) => id !== String(receiverId)).length;
+      const willBeAllRejected =
+        totalParticipants > 0 && existingRejectedCount + 1 >= totalParticipants;
+
+      const update = {
+        $addToSet: {
+          rejectedParticipantIds: receiverId,
+        },
+        $pull: {
+          acceptedParticipantIds: receiverId,
+        },
+      };
+
+      if (existingCall.callMode === CALL_MODE.DIRECT || willBeAllRejected) {
+        update.$set = {
+          status: VIDEO_CALL_STATUS.REJECTED,
+          endedAt,
+        };
+      }
+
+      const videoCall = await VideoCall.findByIdAndUpdate(callId, update, {
+        new: true,
+      });
+      const populatedCall = await this.populateCall(videoCall);
+
       return {
         success: true,
-        call: videoCall,
+        call: populatedCall,
       };
     } catch (error) {
       throw error;
@@ -145,14 +285,13 @@ class VideoCallService {
           duration,
         },
         { new: true },
-      ).populate([
-        { path: "callerId", select: "displayName avatar email" },
-        { path: "receiverId", select: "displayName avatar email" },
-      ]);
+      );
+
+      const populatedCall = await this.populateCall(updatedCall);
 
       return {
         success: true,
-        call: updatedCall,
+        call: populatedCall,
       };
     } catch (error) {
       throw error;
@@ -171,14 +310,13 @@ class VideoCallService {
           endedAt: new Date(),
         },
         { new: true },
-      ).populate([
-        { path: "callerId", select: "displayName avatar email" },
-        { path: "receiverId", select: "displayName avatar email" },
-      ]);
+      );
+
+      const populatedCall = await this.populateCall(videoCall);
 
       return {
         success: true,
-        call: videoCall,
+        call: populatedCall,
       };
     } catch (error) {
       throw error;
@@ -191,18 +329,27 @@ class VideoCallService {
   async getCallHistory(userId, limit = 50, skip = 0) {
     try {
       const calls = await VideoCall.find({
-        $or: [{ callerId: userId }, { receiverId: userId }],
+        $or: [
+          { callerId: userId },
+          { receiverId: userId },
+          { participantIds: userId },
+        ],
       })
         .populate([
           { path: "callerId", select: "displayName avatar email" },
           { path: "receiverId", select: "displayName avatar email" },
+          { path: "participantIds", select: "displayName avatar email" },
         ])
         .sort({ createdAt: -1 })
         .limit(limit)
         .skip(skip);
 
       const total = await VideoCall.countDocuments({
-        $or: [{ callerId: userId }, { receiverId: userId }],
+        $or: [
+          { callerId: userId },
+          { receiverId: userId },
+          { participantIds: userId },
+        ],
       });
 
       return {
@@ -223,7 +370,11 @@ class VideoCallService {
   async getActiveCall(userId) {
     try {
       const activeCall = await VideoCall.findOne({
-        $or: [{ callerId: userId }, { receiverId: userId }],
+        $or: [
+          { callerId: userId },
+          { receiverId: userId },
+          { participantIds: userId },
+        ],
         status: {
           $in: [
             VIDEO_CALL_STATUS.INITIATED,
@@ -234,6 +385,7 @@ class VideoCallService {
       }).populate([
         { path: "callerId", select: "displayName avatar email" },
         { path: "receiverId", select: "displayName avatar email" },
+        { path: "participantIds", select: "displayName avatar email" },
       ]);
 
       return {
@@ -253,7 +405,11 @@ class VideoCallService {
       const stats = await VideoCall.aggregate([
         {
           $match: {
-            $or: [{ callerId: userId }, { receiverId: userId }],
+            $or: [
+              { callerId: userId },
+              { receiverId: userId },
+              { participantIds: userId },
+            ],
           },
         },
         {
