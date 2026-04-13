@@ -139,6 +139,21 @@ router.delete(
   chatController.deleteMessageForMe,
 );
 router.patch("/messages/:messageId", verifyToken, chatController.editMessage);
+router.post(
+  "/messages/:messageId/react",
+  verifyToken,
+  chatController.reactToMessage,
+);
+router.post(
+  "/conversations/:conversationId/messages/:messageId/pin",
+  verifyToken,
+  chatController.pinMessage,
+);
+router.delete(
+  "/conversations/:conversationId/messages/:messageId/pin",
+  verifyToken,
+  chatController.unpinMessage,
+);
 
 router.post(
   "/conversations/:conversationId/members",

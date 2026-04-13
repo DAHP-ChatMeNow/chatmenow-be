@@ -80,6 +80,18 @@ const MessageSchema = new Schema(
       ],
     },
 
+    reactions: [
+      {
+        userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+        emoji: {
+          type: String,
+          enum: ["like", "love", "haha", "sad", "angry", "wow"],
+          required: true,
+        },
+        reactedAt: { type: Date, default: Date.now },
+      },
+    ],
+
     readBy: [{ type: Schema.Types.ObjectId, ref: "User" }],
     isUnsent: { type: Boolean, default: false },
     unsentAt: { type: Date, default: null },
