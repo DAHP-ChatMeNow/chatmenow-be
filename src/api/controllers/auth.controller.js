@@ -209,3 +209,89 @@ exports.changePassword = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+exports.sendSelfLockOtp = async (req, res) => {
+  try {
+    const result = await authService.sendSelfLockOtp(req.user.accountId);
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      expiresIn: result.expiresIn,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.confirmSelfLock = async (req, res) => {
+  try {
+    const result = await authService.confirmSelfLock(req.user.accountId, req.body);
+    res.status(200).json({
+      success: true,
+      locked: result.locked,
+      message: result.message,
+      statusReason: result.statusReason,
+      lockDuration: result.lockDuration,
+      lockedUntil: result.lockedUntil,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.verifySelfLockOtp = async (req, res) => {
+  try {
+    const result = await authService.verifySelfLockOtp(req.user.accountId, req.body);
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      lockVerificationToken: result.lockVerificationToken,
+      expiresIn: result.expiresIn,
+      expiresAt: result.expiresAt,
+      verificationExpiresAt: result.verificationExpiresAt,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.sendUnlockOtp = async (req, res) => {
+  try {
+    const result = await authService.sendUnlockOtp(req.body);
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      expiresIn: result.expiresIn,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.confirmUnlock = async (req, res) => {
+  try {
+    const result = await authService.confirmUnlockByOtp(req.body);
+    res.status(200).json({
+      success: true,
+      unlocked: result.unlocked,
+      message: result.message,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};

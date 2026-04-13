@@ -19,6 +19,13 @@ const UserSchema = new Schema(
     language: { type: String, default: "vi" },
     themeColor: { type: String, default: "light" },
 
+    hometown: { type: String, default: "" },
+    phoneNumber: { type: String, default: "" },
+    gender: { type: String, default: "" },
+    school: { type: String, default: "" },
+    maritalStatus: { type: String, default: "" },
+
+
     isOnline: { type: Boolean, default: false },
     lastSeen: { type: Date, default: Date.now },
 
