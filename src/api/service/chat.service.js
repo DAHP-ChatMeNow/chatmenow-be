@@ -850,6 +850,116 @@ class ChatService {
     };
   }
 
+  async reactToMessage(userId, messageId, emoji) {
+    const VALID_EMOJIS = ["like", "love", "haha", "sad", "angry", "wow"];
+    if (!VALID_EMOJIS.includes(emoji)) {
+      throw {
+        statusCode: 400,
+        message: "Emote không hợp lệ",
+      };
+    }
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy tin nhắn",
+      };
+    }
+
+    if (message.isUnsent) {
+      throw {
+        statusCode: 400,
+        message: "Không thể thả emote vào tin nhắn đã thu hồi",
+      };
+    }
+
+    await this.ensureConversationMember(message.conversationId, userId);
+
+    // Check if user already has this exact reaction → toggle off
+    const existingReaction = (message.reactions || []).find(
+      (r) => String(r.userId) === String(userId) && r.emoji === emoji,
+    );
+
+    if (existingReaction) {
+      // Remove the reaction (toggle off)
+      await Message.updateOne(
+        { _id: messageId },
+        { $pull: { reactions: { userId } } },
+      );
+    } else {
+      // Remove any previous reaction from this user then add new one
+      await Message.updateOne(
+        { _id: messageId },
+        { $pull: { reactions: { userId } } },
+      );
+      await Message.updateOne(
+        { _id: messageId },
+        {
+          $push: {
+            reactions: { userId, emoji, reactedAt: new Date() },
+          },
+        },
+      );
+    }
+
+    const updatedMessage = await Message.findById(messageId)
+      .populate("senderId", "displayName avatar")
+      .lean();
+
+    return updatedMessage;
+  }
+
+  async pinMessage(userId, conversationId, messageId) {
+    const conversation = await this.ensureConversationMember(conversationId, userId);
+
+    const message = await Message.findById(messageId).lean();
+    if (!message) {
+      throw { statusCode: 404, message: "Không tìm thấy tin nhắn" };
+    }
+    if (String(message.conversationId) !== String(conversationId)) {
+      throw { statusCode: 400, message: "Tin nhắn không thuộc cuộc trò chuyện này" };
+    }
+    if (message.isUnsent) {
+      throw { statusCode: 400, message: "Không thể ghim tin nhắn đã thu hồi" };
+    }
+
+    this.ensureCanManagePinnedMessages(conversation, userId);
+
+    const alreadyPinned = (conversation.pinnedMessages || []).some(
+      (entry) => String(entry.messageId) === String(messageId),
+    );
+    if (alreadyPinned) {
+      return await this.buildPinnedMessagesPayload(conversationId, userId);
+    }
+
+    await Conversation.findByIdAndUpdate(conversationId, {
+      $push: {
+        pinnedMessages: {
+          messageId,
+          pinnedAt: new Date(),
+          pinnedBy: userId,
+        },
+      },
+      updatedAt: new Date(),
+    });
+
+    return await this.buildPinnedMessagesPayload(conversationId, userId);
+  }
+
+  async unpinMessage(userId, conversationId, messageId) {
+    const conversation = await this.ensureConversationMember(conversationId, userId);
+
+    this.ensureCanManagePinnedMessages(conversation, userId);
+
+    await Conversation.findByIdAndUpdate(conversationId, {
+      $pull: { pinnedMessages: { messageId } },
+      updatedAt: new Date(),
+    });
+
+    return await this.buildPinnedMessagesPayload(conversationId, userId);
+  }
+
   async editMessage(userId, messageId, content) {
     const trimmedContent = String(content || "").trim();
     if (!trimmedContent) {
