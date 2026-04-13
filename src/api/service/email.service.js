@@ -18,7 +18,11 @@ class EmailService {
     return this.transporter;
   }
 
-  async sendOtpEmail(toEmail, otpCode) {
+  async sendOtpEmail(
+    toEmail,
+    otpCode,
+    { title = "Xác thực tài khoản", description = "", fallback = "" } = {},
+  ) {
     const transporter = this.getTransporter();
 
     const mailOptions = {
@@ -29,12 +33,12 @@ class EmailService {
         <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08);">
           <div style="background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 50%, #7c3aed 100%); padding: 40px 32px; text-align: center;">
             <h1 style="color: #ffffff; font-size: 24px; font-weight: 700; margin: 16px 0 4px;">Chat Me Now</h1>
-            <p style="color: rgba(255,255,255,0.85); font-size: 14px; margin: 0;">Xác thực tài khoản</p>
+            <p style="color: rgba(255,255,255,0.85); font-size: 14px; margin: 0;">${title}</p>
           </div>
           <div style="padding: 40px 32px;">
             <p style="color: #334155; font-size: 16px; line-height: 1.6; margin: 0 0 8px;">Xin chào,</p>
             <p style="color: #334155; font-size: 16px; line-height: 1.6; margin: 0 0 28px;">
-              Bạn đã yêu cầu đăng ký tài khoản trên <strong>Chat Me Now</strong>. Vui lòng sử dụng mã OTP bên dưới để hoàn tất xác thực:
+              ${description || "Vui lòng sử dụng mã OTP bên dưới để hoàn tất xác thực:"}
             </p>
             <div style="background: linear-gradient(135deg, #eff6ff 0%, #f0f4ff 100%); border: 2px dashed #93c5fd; border-radius: 12px; padding: 28px; text-align: center; margin: 0 0 28px;">
               <p style="color: #64748b; font-size: 13px; text-transform: uppercase; letter-spacing: 2px; margin: 0 0 12px; font-weight: 600;">Mã xác thực của bạn</p>
@@ -46,7 +50,7 @@ class EmailService {
               </p>
             </div>
             <p style="color: #64748b; font-size: 14px; line-height: 1.6; margin: 0;">
-              Nếu bạn không yêu cầu đăng ký, vui lòng bỏ qua email này.
+              ${fallback || "Nếu bạn không thực hiện yêu cầu này, vui lòng bỏ qua email này."}
             </p>
           </div>
           <div style="background: #f8fafc; padding: 24px 32px; text-align: center; border-top: 1px solid #e2e8f0;">

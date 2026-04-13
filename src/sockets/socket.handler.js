@@ -204,6 +204,17 @@ function initializeSocket(io) {
       socket.join(conversationId);
     });
 
+    // FE uses "joinConversation" / "leaveConversation"
+    socket.on("joinConversation", (conversationId) => {
+      if (!conversationId) return;
+      socket.join(String(conversationId));
+    });
+
+    socket.on("leaveConversation", (conversationId) => {
+      if (!conversationId) return;
+      socket.leave(String(conversationId));
+    });
+
     socket.on("sendMessage", async (data) => {
       try {
         const {

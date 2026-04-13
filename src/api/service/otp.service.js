@@ -9,19 +9,63 @@ const OTP_LENGTH = 6;
 const OTP_EXPIRY_MS = 5 * 60 * 1000; // 5 phút
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // 60 giây giữa mỗi lần gửi
 const MAX_VERIFY_ATTEMPTS = 5;
+const OTP_PURPOSES = {
+  REGISTER: "register",
+  ACCOUNT_LOCK: "account_lock",
+  ACCOUNT_UNLOCK: "account_unlock",
+};
 
 class OtpService {
+  constructor() {
+    this.PURPOSES = OTP_PURPOSES;
+  }
+
   generateOtp() {
     // Tạo mã OTP 6 chữ số ngẫu nhiên
     const otp = crypto.randomInt(100000, 999999).toString();
     return otp;
   }
 
-  getOtpKey(email) {
-    return `otp:${email.toLowerCase().trim()}`;
+  normalizePurpose(purpose) {
+    return (purpose || OTP_PURPOSES.REGISTER).toLowerCase().trim();
   }
 
-  async sendOtp(email) {
+  getOtpKey(email, purpose = OTP_PURPOSES.REGISTER) {
+    const normalizedPurpose = this.normalizePurpose(purpose);
+    return `otp:${normalizedPurpose}:${email.toLowerCase().trim()}`;
+  }
+
+  buildOtpContext(purpose) {
+    const normalizedPurpose = this.normalizePurpose(purpose);
+
+    if (normalizedPurpose === OTP_PURPOSES.ACCOUNT_LOCK) {
+      return {
+        title: "Xác thực tạm khóa tài khoản",
+        description:
+          "Bạn đang yêu cầu tạm khóa tài khoản Chat Me Now. Vui lòng nhập mã OTP để xác nhận thao tác này.",
+        fallback:
+          "Nếu bạn không thực hiện yêu cầu tạm khóa tài khoản, vui lòng đổi mật khẩu ngay.",
+      };
+    }
+
+    if (normalizedPurpose === OTP_PURPOSES.ACCOUNT_UNLOCK) {
+      return {
+        title: "Xác thực mở khóa tài khoản",
+        description:
+          "Bạn đang yêu cầu mở khóa tài khoản Chat Me Now. Vui lòng nhập mã OTP để xác nhận thao tác này.",
+        fallback: "Nếu bạn không yêu cầu mở khóa, vui lòng bỏ qua email này.",
+      };
+    }
+
+    return {
+      title: "Xác thực tài khoản",
+      description:
+        "Bạn đã yêu cầu đăng ký tài khoản trên Chat Me Now. Vui lòng sử dụng mã OTP bên dưới để hoàn tất xác thực.",
+      fallback: "Nếu bạn không yêu cầu đăng ký, vui lòng bỏ qua email này.",
+    };
+  }
+
+  async sendOtp(email, purpose = OTP_PURPOSES.REGISTER) {
     if (!email) {
       throw {
         statusCode: 400,
@@ -29,7 +73,7 @@ class OtpService {
       };
     }
 
-    const key = this.getOtpKey(email);
+    const key = this.getOtpKey(email, purpose);
     const existing = otpStore.get(key);
 
     // Kiểm tra cooldown để tránh spam
@@ -52,6 +96,7 @@ class OtpService {
     const otpData = {
       code: otpCode,
       email: email.toLowerCase().trim(),
+      purpose: this.normalizePurpose(purpose),
       createdAt: Date.now(),
       lastSentAt: Date.now(),
       attempts: 0,
@@ -69,7 +114,8 @@ class OtpService {
     }, OTP_EXPIRY_MS);
 
     // Gửi email
-    await emailService.sendOtpEmail(email, otpCode);
+    const context = this.buildOtpContext(purpose);
+    await emailService.sendOtpEmail(email, otpCode, context);
 
     return {
       message: "Mã OTP đã được gửi đến email của bạn.",
@@ -77,7 +123,7 @@ class OtpService {
     };
   }
 
-  verifyOtp(email, otpCode) {
+  verifyOtp(email, otpCode, purpose = OTP_PURPOSES.REGISTER) {
     if (!email || !otpCode) {
       throw {
         statusCode: 400,
@@ -85,7 +131,7 @@ class OtpService {
       };
     }
 
-    const key = this.getOtpKey(email);
+    const key = this.getOtpKey(email, purpose);
     const otpData = otpStore.get(key);
 
     if (!otpData) {
@@ -135,16 +181,18 @@ class OtpService {
     };
   }
 
-  isOtpVerified(email) {
-    const key = this.getOtpKey(email);
+  isOtpVerified(email, purpose = OTP_PURPOSES.REGISTER) {
+    const key = this.getOtpKey(email, purpose);
     const otpData = otpStore.get(key);
     return otpData?.verified === true;
   }
 
-  clearOtp(email) {
-    const key = this.getOtpKey(email);
+  clearOtp(email, purpose = OTP_PURPOSES.REGISTER) {
+    const key = this.getOtpKey(email, purpose);
     otpStore.delete(key);
   }
 }
+
+OtpService.PURPOSES = OTP_PURPOSES;
 
 module.exports = new OtpService();

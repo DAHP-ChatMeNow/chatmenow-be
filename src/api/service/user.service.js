@@ -150,6 +150,11 @@ class UserService {
       lastSeen: user.lastSeen,
       lastSeenText: formatLastSeen(user.lastSeen, user.isOnline),
       coverImage: user.coverImage,
+      hometown: user.hometown,
+      phoneNumber: user.phoneNumber,
+      gender: user.gender,
+      school: user.school,
+      maritalStatus: user.maritalStatus,
       friends: user.friends,
       createdAt: user.createdAt,
     };
@@ -168,7 +173,7 @@ class UserService {
       User.findById(targetUserId)
         .populate("friends", "_id")
         .select(
-          "displayName avatar bio coverImage isOnline lastSeen friends createdAt",
+          "displayName avatar bio coverImage hometown phoneNumber gender school maritalStatus isOnline lastSeen friends createdAt",
         ),
     ]);
 
@@ -204,6 +209,11 @@ class UserService {
       avatar: targetUser.avatar,
       bio: targetUser.bio,
       coverImage: targetUser.coverImage,
+      hometown: targetUser.hometown,
+      phoneNumber: targetUser.phoneNumber,
+      gender: targetUser.gender,
+      school: targetUser.school,
+      maritalStatus: targetUser.maritalStatus,
       isOnline: targetUser.isOnline,
       lastSeen: targetUser.lastSeen,
       lastSeenText: formatLastSeen(targetUser.lastSeen, targetUser.isOnline),
@@ -217,7 +227,7 @@ class UserService {
   /**
    * Cập nhật profile
    */
-  async updateProfile(userId, { displayName, bio, language, themeColor }) {
+  async updateProfile(userId, { displayName, bio, language, themeColor, hometown, phoneNumber, gender, school, maritalStatus }) {
     if (displayName && displayName.trim().length < 2) {
       throw {
         statusCode: 400,
@@ -230,6 +240,11 @@ class UserService {
     if (bio !== undefined) updateData.bio = bio;
     if (language !== undefined) updateData.language = language;
     if (themeColor !== undefined) updateData.themeColor = themeColor;
+    if (hometown !== undefined) updateData.hometown = hometown;
+    if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
+    if (gender !== undefined) updateData.gender = gender;
+    if (school !== undefined) updateData.school = school;
+    if (maritalStatus !== undefined) updateData.maritalStatus = maritalStatus;
 
     const updatedUser = await User.findByIdAndUpdate(userId, updateData, {
       new: true,

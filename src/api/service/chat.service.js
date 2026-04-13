@@ -1,8 +1,10 @@
 const mongoose = require("mongoose");
 const Conversation = require("../models/conversation.model");
 const Message = require("../models/message.model");
+const Post = require("../models/post.model");
 const User = require("../models/user.model");
 const Notification = require("../models/notification.model");
+const { getSignedUrlFromS3 } = require("../middleware/storage");
 const {
   CONVERSATION_TYPES,
   MESSAGE_TYPES,
@@ -136,11 +138,149 @@ class ChatService {
         return "Đã gửi một bản ghi âm";
       case MESSAGE_TYPES.FILE:
         return "Đã gửi một tệp";
+      case MESSAGE_TYPES.SHARED_POST:
+        return message.content
+          ? `Đã chia sẻ bài viết: ${message.content}`
+          : "Đã chia sẻ một bài viết";
       case MESSAGE_TYPES.SYSTEM:
         return message.content || "Tin nhắn hệ thống";
       default:
         return message.content || "Tin nhắn";
     }
+  }
+
+  async getViewerFriendIdSet(userId) {
+    const viewer = await User.findById(userId).select("friends").lean();
+    if (!viewer) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    return new Set((viewer.friends || []).map((id) => String(id)));
+  }
+
+  canViewerAccessPost(post, viewerId, viewerFriendIdSet = new Set()) {
+    if (!post || post.isDeleted) return false;
+
+    const authorId =
+      typeof post.authorId === "object"
+        ? String(post.authorId?._id || post.authorId)
+        : String(post.authorId);
+    const normalizedViewerId = String(viewerId);
+
+    if (authorId === normalizedViewerId) return true;
+    if (post.privacy === "public") return true;
+
+    if (post.privacy === "friends") {
+      return viewerFriendIdSet.has(authorId);
+    }
+
+    if (post.privacy === "custom") {
+      return (post.customAudienceIds || []).some(
+        (id) => String(id) === normalizedViewerId,
+      );
+    }
+
+    return false;
+  }
+
+  async resolveMessageSharedPostMedia(sharedPost = null) {
+    if (!sharedPost) return sharedPost;
+
+    const mediaArray = Array.isArray(sharedPost.media) ? sharedPost.media : [];
+    const resolvedMedia = await Promise.all(
+      mediaArray.map(async (item) => {
+        if (!item?.url || String(item.url).startsWith("http")) {
+          return item;
+        }
+
+        try {
+          const signedUrl = await getSignedUrlFromS3(item.url);
+          return { ...item, url: signedUrl };
+        } catch {
+          return item;
+        }
+      }),
+    );
+
+    return {
+      ...sharedPost,
+      media: resolvedMedia,
+    };
+  }
+
+  async decorateMessageWithSharedPost(
+    message,
+    viewerId,
+    viewerFriendIdSet = null,
+  ) {
+    const baseMessage =
+      typeof message?.toObject === "function" ? message.toObject() : message;
+
+    if (!baseMessage?.sharedPostId) {
+      return baseMessage;
+    }
+
+    const sharedPostRaw =
+      typeof baseMessage.sharedPostId === "object"
+        ? baseMessage.sharedPostId
+        : null;
+
+    if (!sharedPostRaw || !sharedPostRaw._id) {
+      return {
+        ...baseMessage,
+        sharedPost: {
+          isAccessible: false,
+          unavailableReason: "Bài viết đã bị xóa hoặc không tồn tại",
+        },
+      };
+    }
+
+    const friendIdSet = viewerFriendIdSet || (await this.getViewerFriendIdSet(viewerId));
+    if (!this.canViewerAccessPost(sharedPostRaw, viewerId, friendIdSet)) {
+      return {
+        ...baseMessage,
+        sharedPost: {
+          _id: sharedPostRaw._id,
+          isAccessible: false,
+          unavailableReason: "Bạn không có quyền xem bài viết được chia sẻ",
+        },
+      };
+    }
+
+    const normalizedSharedPost = await this.resolveMessageSharedPostMedia(
+      sharedPostRaw,
+    );
+
+    return {
+      ...baseMessage,
+      sharedPost: {
+        ...normalizedSharedPost,
+        isAccessible: true,
+      },
+    };
+  }
+
+  normalizeSharedPostId(sharedPostId) {
+    if (sharedPostId == null) {
+      return null;
+    }
+
+    const normalized = String(sharedPostId).trim();
+    if (!normalized) {
+      return null;
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(normalized)) {
+      throw {
+        statusCode: 400,
+        message: "sharedPostId không hợp lệ",
+      };
+    }
+
+    return normalized;
   }
 
   normalizeAttachments(attachments) {
@@ -221,7 +361,7 @@ class ChatService {
     return MESSAGE_TYPES.FILE;
   }
 
-  validateOutgoingMessagePayload({ content, type, attachments }) {
+  validateOutgoingMessagePayload({ content, type, attachments, sharedPostId }) {
     const trimmedContent = String(content || "").trim();
     const allowedTypes = Object.values(MESSAGE_TYPES);
 
@@ -236,6 +376,31 @@ class ChatService {
       throw {
         statusCode: 400,
         message: "Không thể gửi tin nhắn hệ thống từ client",
+      };
+    }
+
+    if (type === MESSAGE_TYPES.SHARED_POST) {
+      if (!sharedPostId) {
+        throw {
+          statusCode: 400,
+          message: "Thiếu sharedPostId cho tin nhắn chia sẻ bài viết",
+        };
+      }
+
+      if (attachments.length > 0) {
+        throw {
+          statusCode: 400,
+          message: "Tin nhắn chia sẻ bài viết không hỗ trợ attachments",
+        };
+      }
+
+      return trimmedContent;
+    }
+
+    if (sharedPostId) {
+      throw {
+        statusCode: 400,
+        message: "sharedPostId chỉ dùng cho tin nhắn kiểu shared_post",
       };
     }
 
@@ -661,16 +826,30 @@ class ChatService {
           path: "senderId",
           select: "displayName avatar",
         },
+      })
+      .populate({
+        path: "sharedPostId",
+        select: "authorId content media privacy customAudienceIds isDeleted createdAt",
+        populate: {
+          path: "authorId",
+          select: "displayName avatar",
+        },
       });
 
     const hasMore = messages.length > safeLimit;
     const pagedMessages = hasMore ? messages.slice(0, safeLimit) : messages;
     const ordered = pagedMessages.reverse();
+    const viewerFriendIdSet = await this.getViewerFriendIdSet(userId);
+    const resolvedMessages = await Promise.all(
+      ordered.map((message) =>
+        this.decorateMessageWithSharedPost(message, userId, viewerFriendIdSet),
+      ),
+    );
     const nextCursor = hasMore && ordered.length ? ordered[0]._id : null;
 
     return {
-      messages: ordered,
-      total: ordered.length,
+      messages: resolvedMessages,
+      total: resolvedMessages.length,
       limit: safeLimit,
       hasMore,
       nextCursor,
@@ -688,6 +867,7 @@ class ChatService {
       type = MESSAGE_TYPES.TEXT,
       attachments = [],
       replyToMessageId = null,
+      sharedPostId = null,
     },
   ) {
     const conversation = await this.ensureConversationMember(
@@ -712,12 +892,39 @@ class ChatService {
     }
 
     const normalizedAttachments = this.normalizeAttachments(attachments);
+    const normalizedSharedPostId = this.normalizeSharedPostId(sharedPostId);
     const resolvedType = this.resolveMessageType(type, normalizedAttachments);
     const trimmedContent = this.validateOutgoingMessagePayload({
       content,
       type: resolvedType,
       attachments: normalizedAttachments,
+      sharedPostId: normalizedSharedPostId,
     });
+
+    if (resolvedType === MESSAGE_TYPES.SHARED_POST) {
+      const [viewerFriendIdSet, sharedPost] = await Promise.all([
+        this.getViewerFriendIdSet(senderId),
+        Post.findById(normalizedSharedPostId)
+          .select("authorId content media privacy customAudienceIds isDeleted")
+          .populate("authorId", "displayName avatar")
+          .lean(),
+      ]);
+
+      if (!sharedPost || sharedPost.isDeleted) {
+        throw {
+          statusCode: 404,
+          message: "Bài viết chia sẻ không tồn tại",
+        };
+      }
+
+      if (!this.canViewerAccessPost(sharedPost, senderId, viewerFriendIdSet)) {
+        throw {
+          statusCode: 403,
+          message: "Bạn không có quyền chia sẻ bài viết này",
+        };
+      }
+    }
+
     const resolvedReplyTarget = await this.resolveReplyTarget(
       conversationId,
       replyToMessageId,
@@ -739,6 +946,7 @@ class ChatService {
       content: trimmedContent,
       type: resolvedType,
       attachments: normalizedAttachments,
+      sharedPostId: normalizedSharedPostId,
       replyToMessageId: safeReplyToMessageId,
       replyPreview: safeReplyPreview,
       readBy: [senderId],
@@ -750,6 +958,14 @@ class ChatService {
       select: "content type attachments isUnsent unsentAt senderId",
       populate: {
         path: "senderId",
+        select: "displayName avatar",
+      },
+    });
+    await message.populate({
+      path: "sharedPostId",
+      select: "authorId content media privacy customAudienceIds isDeleted createdAt",
+      populate: {
+        path: "authorId",
         select: "displayName avatar",
       },
     });
@@ -765,7 +981,7 @@ class ChatService {
       updatedAt: new Date(),
     });
 
-    return message;
+    return await this.decorateMessageWithSharedPost(message, senderId);
   }
 
   async unsendMessage(userId, messageId) {
@@ -805,6 +1021,7 @@ class ChatService {
     message.unsentAt = new Date();
     message.content = "Tin nhắn đã được thu hồi";
     message.attachments = [];
+    message.sharedPostId = null;
     message.replyToMessageId = null;
     message.replyPreview = null;
     message.isEdited = false;
@@ -848,6 +1065,116 @@ class ChatService {
       conversationId: message.conversationId,
       deletedForUserId: userId,
     };
+  }
+
+  async reactToMessage(userId, messageId, emoji) {
+    const VALID_EMOJIS = ["like", "love", "haha", "sad", "angry", "wow"];
+    if (!VALID_EMOJIS.includes(emoji)) {
+      throw {
+        statusCode: 400,
+        message: "Emote không hợp lệ",
+      };
+    }
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy tin nhắn",
+      };
+    }
+
+    if (message.isUnsent) {
+      throw {
+        statusCode: 400,
+        message: "Không thể thả emote vào tin nhắn đã thu hồi",
+      };
+    }
+
+    await this.ensureConversationMember(message.conversationId, userId);
+
+    // Check if user already has this exact reaction → toggle off
+    const existingReaction = (message.reactions || []).find(
+      (r) => String(r.userId) === String(userId) && r.emoji === emoji,
+    );
+
+    if (existingReaction) {
+      // Remove the reaction (toggle off)
+      await Message.updateOne(
+        { _id: messageId },
+        { $pull: { reactions: { userId } } },
+      );
+    } else {
+      // Remove any previous reaction from this user then add new one
+      await Message.updateOne(
+        { _id: messageId },
+        { $pull: { reactions: { userId } } },
+      );
+      await Message.updateOne(
+        { _id: messageId },
+        {
+          $push: {
+            reactions: { userId, emoji, reactedAt: new Date() },
+          },
+        },
+      );
+    }
+
+    const updatedMessage = await Message.findById(messageId)
+      .populate("senderId", "displayName avatar")
+      .lean();
+
+    return updatedMessage;
+  }
+
+  async pinMessage(userId, conversationId, messageId) {
+    const conversation = await this.ensureConversationMember(conversationId, userId);
+
+    const message = await Message.findById(messageId).lean();
+    if (!message) {
+      throw { statusCode: 404, message: "Không tìm thấy tin nhắn" };
+    }
+    if (String(message.conversationId) !== String(conversationId)) {
+      throw { statusCode: 400, message: "Tin nhắn không thuộc cuộc trò chuyện này" };
+    }
+    if (message.isUnsent) {
+      throw { statusCode: 400, message: "Không thể ghim tin nhắn đã thu hồi" };
+    }
+
+    this.ensureCanManagePinnedMessages(conversation, userId);
+
+    const alreadyPinned = (conversation.pinnedMessages || []).some(
+      (entry) => String(entry.messageId) === String(messageId),
+    );
+    if (alreadyPinned) {
+      return await this.buildPinnedMessagesPayload(conversationId, userId);
+    }
+
+    await Conversation.findByIdAndUpdate(conversationId, {
+      $push: {
+        pinnedMessages: {
+          messageId,
+          pinnedAt: new Date(),
+          pinnedBy: userId,
+        },
+      },
+      updatedAt: new Date(),
+    });
+
+    return await this.buildPinnedMessagesPayload(conversationId, userId);
+  }
+
+  async unpinMessage(userId, conversationId, messageId) {
+    const conversation = await this.ensureConversationMember(conversationId, userId);
+
+    this.ensureCanManagePinnedMessages(conversation, userId);
+
+    await Conversation.findByIdAndUpdate(conversationId, {
+      $pull: { pinnedMessages: { messageId } },
+      updatedAt: new Date(),
+    });
+
+    return await this.buildPinnedMessagesPayload(conversationId, userId);
   }
 
   async editMessage(userId, messageId, content) {

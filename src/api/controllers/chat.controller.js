@@ -416,6 +416,50 @@ exports.editMessage = async (req, res) => {
   }
 };
 
+exports.reactToMessage = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { messageId } = req.params;
+    const { emoji } = req.body || {};
+
+    const message = await chatService.reactToMessage(userId, messageId, emoji);
+
+    const io = req.app.get("io");
+    const conversationId = message.conversationId?.toString();
+
+    if (conversationId) {
+      // Normalize for frontend: ensure id and conversationId are plain strings
+      const emitPayload = {
+        ...message,
+        id: message._id?.toString() || message.id,
+        _id: message._id?.toString() || message._id,
+        conversationId,
+        senderId:
+          message.senderId && typeof message.senderId === "object"
+            ? {
+                ...message.senderId,
+                id: message.senderId._id?.toString() || message.senderId.id,
+                _id: message.senderId._id?.toString(),
+              }
+            : message.senderId,
+        reactions: (message.reactions || []).map((r) => ({
+          ...r,
+          userId: r.userId?.toString?.() ?? r.userId,
+        })),
+      };
+      io.to(conversationId).emit("message:reaction", emitPayload);
+      io.to(conversationId).emit("message:updated", emitPayload);
+    }
+
+    res.status(200).json({ success: true, message });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.sendMessage = async (req, res) => {
   try {
     const senderId = req.user.userId;
@@ -430,7 +474,8 @@ exports.sendMessage = async (req, res) => {
         type === "image" ||
         type === "audio" ||
         type === "file" ||
-        type === "video"
+        type === "video" ||
+        type === "shared_post"
       ) {
         return res.status(400).json({
           message: "Cuộc trò chuyện AI hiện chỉ hỗ trợ tin nhắn văn bản",
@@ -817,3 +862,54 @@ exports.dissolveGroup = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+exports.pinMessage = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { conversationId, messageId } = req.params;
+
+    const result = await chatService.pinMessage(userId, conversationId, messageId);
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(conversationId).emit("message:pinned", {
+        conversationId,
+        pinnedMessages: result.pinnedMessages,
+        latestPinnedMessage: result.latestPinnedMessage,
+      });
+    }
+
+    res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.unpinMessage = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { conversationId, messageId } = req.params;
+
+    const result = await chatService.unpinMessage(userId, conversationId, messageId);
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(conversationId).emit("message:unpinned", {
+        conversationId,
+        pinnedMessages: result.pinnedMessages,
+        latestPinnedMessage: result.latestPinnedMessage,
+      });
+    }
+
+    res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
