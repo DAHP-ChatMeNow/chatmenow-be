@@ -20,6 +20,12 @@ const PostSchema = new Schema(
       },
     ],
 
+    sharedPost: {
+      postId: { type: Schema.Types.ObjectId, ref: "Post", default: null },
+      authorId: { type: Schema.Types.ObjectId, ref: "User", default: null },
+      sharedAt: { type: Date, default: Date.now },
+    },
+
     likes: [{ type: Schema.Types.ObjectId, ref: "User" }], // Array of user IDs who liked this post
     likesCount: { type: Number, default: 0 },
     commentsCount: { type: Number, default: 0 },

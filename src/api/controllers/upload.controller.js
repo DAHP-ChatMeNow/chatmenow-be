@@ -81,9 +81,56 @@ const getChatAttachmentUploadUrl = async (req, res) => {
   }
 };
 
+// Upload cover image to S3
+const uploadCoverImage = async (req, res) => {
+  try {
+    const updatedUser = await uploadService.uploadCoverImage(
+      req.user.userId,
+      req.file,
+    );
+
+    res.status(200).json({
+      msg: "Upload ảnh bìa thành công",
+      user: {
+        ...updatedUser.toObject(),
+      },
+    });
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ msg: err.message });
+    }
+    res
+      .status(500)
+      .json({ msg: "Lỗi server khi upload ảnh bìa", error: err.message });
+  }
+};
+
+// Delete cover image
+const deleteCoverImage = async (req, res) => {
+  try {
+    const updatedUser = await uploadService.deleteCoverImage(req.user.userId);
+
+    res.status(200).json({
+      msg: "Đã xóa ảnh bìa",
+      user: {
+        ...updatedUser.toObject(),
+      },
+    });
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ msg: err.message });
+    }
+    res
+      .status(500)
+      .json({ msg: "Lỗi server khi xóa ảnh bìa", error: err.message });
+  }
+};
+
 module.exports = {
   uploadImage,
   deleteAvatar,
   getPresignedUrl,
   getChatAttachmentUploadUrl,
+  uploadCoverImage,
+  deleteCoverImage,
 };

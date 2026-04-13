@@ -1,4 +1,5 @@
 const postService = require("../service/post.service");
+const Conversation = require("../models/conversation.model");
 
 exports.getNewsFeed = async (req, res) => {
   try {
@@ -354,6 +355,65 @@ exports.deleteMyPost = async (req, res) => {
       success: true,
       message: "Đã ẩn bài viết",
       ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.sharePostToMyTimeline = async (req, res) => {
+  try {
+    const result = await postService.sharePostToMyTimeline(
+      req.user.userId,
+      req.params.id,
+      req.body || {},
+    );
+
+    res.status(201).json({
+      success: true,
+      message: "Đã chia sẻ bài viết lên trang cá nhân",
+      post: result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.sharePostToConversation = async (req, res) => {
+  try {
+    const message = await postService.sharePostToConversation(
+      req.user.userId,
+      req.params.id,
+      req.body || {},
+    );
+
+    const io = req.app.get("io");
+    const conversation = await Conversation.findById(message.conversationId)
+      .select("members.userId")
+      .lean();
+
+    io.to(message.conversationId.toString()).emit("newMessage", message);
+    io.to(message.conversationId.toString()).emit("message:new", message);
+
+    const memberIds = (conversation?.members || [])
+      .map((member) => member.userId?.toString())
+      .filter(Boolean);
+
+    for (const memberId of memberIds) {
+      io.to(memberId).emit("newMessage", message);
+      io.to(memberId).emit("message:new", message);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "Đã chia sẻ bài viết vào cuộc trò chuyện",
+      data: message,
     });
   } catch (error) {
     if (error.statusCode) {

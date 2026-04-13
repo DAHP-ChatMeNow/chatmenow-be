@@ -5,8 +5,102 @@ const crypto = require("crypto");
 const { getSignedUrlFromS3 } = require("../middleware/storage");
 const { generateDefaultAvatar } = require("../../utils/avatar.helper");
 const otpService = require("./otp.service");
+const SELF_LOCK_VERIFY_SESSION_MS = 5 * 60 * 1000;
+const selfLockVerifySessionStore = new Map();
 
 class AuthService {
+  createSelfLockVerifySession(accountId) {
+    const token = crypto.randomUUID();
+    const now = Date.now();
+    const expiresAt = now + SELF_LOCK_VERIFY_SESSION_MS;
+
+    selfLockVerifySessionStore.set(token, {
+      accountId: accountId.toString(),
+      createdAt: now,
+      expiresAt,
+    });
+
+    setTimeout(() => {
+      selfLockVerifySessionStore.delete(token);
+    }, SELF_LOCK_VERIFY_SESSION_MS);
+
+    return {
+      token,
+      expiresIn: Math.floor(SELF_LOCK_VERIFY_SESSION_MS / 1000),
+      expiresAt: new Date(expiresAt).toISOString(),
+    };
+  }
+
+  consumeSelfLockVerifySession(accountId, token) {
+    if (!token) {
+      throw {
+        statusCode: 400,
+        message: "Thiếu lockVerificationToken.",
+      };
+    }
+
+    const session = selfLockVerifySessionStore.get(token);
+    if (!session) {
+      throw {
+        statusCode: 400,
+        message:
+          "Phiên xác thực OTP đã hết hạn hoặc không hợp lệ. Vui lòng gửi lại OTP.",
+      };
+    }
+
+    if (session.accountId !== accountId.toString()) {
+      selfLockVerifySessionStore.delete(token);
+      throw {
+        statusCode: 403,
+        message: "Phiên xác thực OTP không thuộc về tài khoản hiện tại.",
+      };
+    }
+
+    if (session.expiresAt <= Date.now()) {
+      selfLockVerifySessionStore.delete(token);
+      throw {
+        statusCode: 400,
+        message:
+          "Phiên xác thực OTP đã hết hạn. Vui lòng gửi lại OTP để tiếp tục.",
+      };
+    }
+
+    selfLockVerifySessionStore.delete(token);
+  }
+
+  getSelfLockReason(reason, otherReason = "") {
+    const reasonMap = {
+      temporary_leave: "Tạm thời không sử dụng",
+      security_concern: "Nghi ngờ bảo mật tài khoản",
+      privacy_break: "Muốn tạm dừng vì lý do riêng tư",
+      other: "Lý do khác",
+    };
+
+    const normalizedReason = (reason || "").toString().toLowerCase().trim();
+
+    if (!normalizedReason) {
+      return "Tự khóa tạm thời (không cung cấp lý do)";
+    }
+
+    if (!reasonMap[normalizedReason]) {
+      throw {
+        statusCode: 400,
+        message: "Lý do tạm khóa không hợp lệ.",
+      };
+    }
+
+    if (normalizedReason === "other") {
+      const cleanOtherReason = (otherReason || "").toString().trim();
+      if (!cleanOtherReason) {
+        return "Tự khóa tạm thời - Lý do khác";
+      }
+
+      return `Tự khóa tạm thời - ${cleanOtherReason.slice(0, 300)}`;
+    }
+
+    return `Tự khóa tạm thời - ${reasonMap[normalizedReason]}`;
+  }
+
   async buildAvatarViewUrl(avatar) {
     if (!avatar) return "";
 
@@ -526,6 +620,210 @@ class AuthService {
     throw {
       statusCode: 200,
       message: "Tính năng đang phát triển",
+    };
+  }
+
+  async sendSelfLockOtp(accountId) {
+    const account = await Account.findById(accountId).select(
+      "email accountStatus isActive",
+    );
+
+    if (!account) {
+      throw {
+        statusCode: 404,
+        message: "Tài khoản không tồn tại.",
+      };
+    }
+
+    if (account.accountStatus !== "active" || account.isActive === false) {
+      throw {
+        statusCode: 400,
+        message: "Chỉ tài khoản đang hoạt động mới có thể gửi OTP tạm khóa.",
+      };
+    }
+
+    return await otpService.sendOtp(
+      account.email,
+      otpService.PURPOSES.ACCOUNT_LOCK,
+    );
+  }
+
+  async verifySelfLockOtp(accountId, { otp }) {
+    const account = await Account.findById(accountId).select(
+      "email accountStatus isActive",
+    );
+
+    if (!account) {
+      throw {
+        statusCode: 404,
+        message: "Tài khoản không tồn tại.",
+      };
+    }
+
+    if (account.accountStatus !== "active" || account.isActive === false) {
+      throw {
+        statusCode: 400,
+        message: "Tài khoản không ở trạng thái hoạt động để tạm khóa.",
+      };
+    }
+
+    otpService.verifyOtp(
+      account.email,
+      otp,
+      otpService.PURPOSES.ACCOUNT_LOCK,
+    );
+    otpService.clearOtp(account.email, otpService.PURPOSES.ACCOUNT_LOCK);
+
+    const verifySession = this.createSelfLockVerifySession(account._id);
+
+    return {
+      message: "Xác thực OTP thành công. Bạn có 5 phút để hoàn tất tạm khóa.",
+      lockVerificationToken: verifySession.token,
+      expiresIn: verifySession.expiresIn,
+      expiresAt: verifySession.expiresAt,
+      verificationExpiresAt: verifySession.expiresAt,
+    };
+  }
+
+  async confirmSelfLock(accountId, { reason, otherReason, lockVerificationToken }) {
+    const account = await Account.findById(accountId).select(
+      "email accountStatus isActive",
+    );
+
+    if (!account) {
+      throw {
+        statusCode: 404,
+        message: "Tài khoản không tồn tại.",
+      };
+    }
+
+    if (account.accountStatus !== "active" || account.isActive === false) {
+      throw {
+        statusCode: 400,
+        message: "Tài khoản không ở trạng thái hoạt động để tạm khóa.",
+      };
+    }
+
+    this.consumeSelfLockVerifySession(account._id, lockVerificationToken);
+
+    const statusReason = this.getSelfLockReason(reason, otherReason);
+
+    await Account.updateOne(
+      { _id: account._id },
+      {
+        $set: {
+          accountStatus: "locked",
+          isActive: false,
+          suspendedUntil: null,
+          statusReason,
+          statusUpdatedAt: new Date(),
+          currentSession: {
+            sessionId: null,
+            deviceId: null,
+            deviceName: "",
+            loggedInAt: null,
+          },
+          rememberedLogins: [],
+        },
+      },
+    );
+
+    return {
+      locked: true,
+      statusReason,
+      message: "Đã tạm khóa tài khoản vô thời hạn. Chỉ mở lại khi bạn tự xác thực OTP mở khóa.",
+      lockDuration: "indefinite",
+      lockedUntil: null,
+    };
+  }
+
+  async sendUnlockOtp({ email }) {
+    if (!email) {
+      throw {
+        statusCode: 400,
+        message: "Vui lòng nhập địa chỉ email.",
+      };
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const account = await Account.findOne({ email: normalizedEmail }).select(
+      "accountStatus isActive",
+    );
+
+    if (!account) {
+      throw {
+        statusCode: 404,
+        message: "Email chưa được đăng ký tài khoản.",
+      };
+    }
+
+    if (account.accountStatus !== "locked" && account.isActive !== false) {
+      throw {
+        statusCode: 400,
+        message: "Tài khoản này hiện không ở trạng thái tạm khóa.",
+      };
+    }
+
+    return await otpService.sendOtp(
+      normalizedEmail,
+      otpService.PURPOSES.ACCOUNT_UNLOCK,
+    );
+  }
+
+  async confirmUnlockByOtp({ email, otp }) {
+    if (!email) {
+      throw {
+        statusCode: 400,
+        message: "Vui lòng nhập địa chỉ email.",
+      };
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const account = await Account.findOne({ email: normalizedEmail }).select(
+      "accountStatus isActive",
+    );
+
+    if (!account) {
+      throw {
+        statusCode: 404,
+        message: "Email chưa được đăng ký tài khoản.",
+      };
+    }
+
+    if (account.accountStatus !== "locked" && account.isActive !== false) {
+      throw {
+        statusCode: 400,
+        message: "Tài khoản này hiện không ở trạng thái tạm khóa.",
+      };
+    }
+
+    otpService.verifyOtp(
+      normalizedEmail,
+      otp,
+      otpService.PURPOSES.ACCOUNT_UNLOCK,
+    );
+
+    await Account.updateOne(
+      { _id: account._id },
+      {
+        $set: {
+          accountStatus: "active",
+          isActive: true,
+          suspendedUntil: null,
+          statusReason: "",
+          statusUpdatedAt: new Date(),
+        },
+      },
+    );
+
+    otpService.clearOtp(
+      normalizedEmail,
+      otpService.PURPOSES.ACCOUNT_UNLOCK,
+    );
+
+    return {
+      unlocked: true,
+      message: "Đã mở khóa tài khoản thành công. Bạn có thể đăng nhập lại.",
     };
   }
 }
