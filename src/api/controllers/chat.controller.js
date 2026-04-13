@@ -416,6 +416,30 @@ exports.editMessage = async (req, res) => {
   }
 };
 
+exports.reactToMessage = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { messageId } = req.params;
+    const { emoji } = req.body || {};
+    const message = await chatService.reactToMessage(userId, messageId, emoji);
+
+    const io = req.app.get("io");
+    const conversationId = message.conversationId?.toString();
+
+    if (conversationId) {
+      io.to(conversationId).emit("message:updated", message);
+      io.to(conversationId).emit("message:reaction", message);
+    }
+
+    res.status(200).json({ success: true, message });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.sendMessage = async (req, res) => {
   try {
     const senderId = req.user.userId;

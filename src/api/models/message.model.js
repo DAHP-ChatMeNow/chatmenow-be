@@ -51,6 +51,14 @@ const MessageSchema = new Schema(
       senderDisplayName: { type: String, default: "" },
     },
 
+    reactions: [
+      {
+        userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+        emoji: { type: String, required: true },
+        reactedAt: { type: Date, default: Date.now },
+      },
+    ],
+
     // Optional metadata for call-history system messages.
     callInfo: {
       callId: { type: Schema.Types.ObjectId, ref: "VideoCall", default: null },

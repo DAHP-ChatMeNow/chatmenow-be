@@ -43,6 +43,9 @@ JWT_SECRET=your_jwt_secret
 API_KEY=your_api_key
 ALLOWED_ORIGINS=http://localhost:3000
 
+# Capacitor/WebView origins (recommended)
+# ALLOWED_ORIGINS=http://localhost,http://localhost:3000,https://localhost,capacitor://localhost,https://your-frontend-domain
+
 AWS_ACCESS_KEY_ID=your_key
 AWS_SECRET_ACCESS_KEY=your_secret
 S3_BUCKET_NAME=your_bucket
@@ -53,6 +56,10 @@ LIVEKIT_API_KEY=devkey
 LIVEKIT_API_SECRET=devsecret
 NEXT_PUBLIC_ENABLE_CALL=false
 ```
+
+Notes:
+- If `credentials: true` is enabled in CORS, do not use wildcard `*` for `Access-Control-Allow-Origin`.
+- Include both web and Capacitor origins (`capacitor://localhost`, `https://localhost`) in `ALLOWED_ORIGINS`.
 
 ### Run project
 
