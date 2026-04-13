@@ -1235,6 +1235,65 @@ class ChatService {
     return message;
   }
 
+  async reactToMessage(userId, messageId, emoji) {
+    const normalizedEmoji = String(emoji || "").trim();
+    if (!normalizedEmoji) {
+      throw {
+        statusCode: 400,
+        message: "Emoji không hợp lệ",
+      };
+    }
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy tin nhắn",
+      };
+    }
+
+    await this.ensureConversationMember(message.conversationId, userId);
+
+    if (message.isUnsent) {
+      throw {
+        statusCode: 400,
+        message: "Không thể thả emoji cho tin nhắn đã thu hồi",
+      };
+    }
+
+    const reactions = Array.isArray(message.reactions)
+      ? [...message.reactions]
+      : [];
+    const existingIndex = reactions.findIndex(
+      (reaction) => String(reaction.userId) === String(userId),
+    );
+
+    if (existingIndex >= 0) {
+      const existingReaction = reactions[existingIndex];
+      if (String(existingReaction.emoji) === normalizedEmoji) {
+        reactions.splice(existingIndex, 1);
+      } else {
+        reactions[existingIndex] = {
+          userId,
+          emoji: normalizedEmoji,
+          reactedAt: new Date(),
+        };
+      }
+    } else {
+      reactions.push({
+        userId,
+        emoji: normalizedEmoji,
+        reactedAt: new Date(),
+      });
+    }
+
+    message.reactions = reactions;
+    await message.save();
+    await message.populate("senderId", "displayName avatar");
+
+    return message;
+  }
+
   async pinMessage(userId, conversationId, messageId) {
     const normalizedMessageId = this.normalizeMessageId(messageId);
     const conversation = await this.ensureConversationMember(conversationId, userId);

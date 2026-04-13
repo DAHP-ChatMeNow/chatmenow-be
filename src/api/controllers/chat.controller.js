@@ -428,27 +428,10 @@ exports.reactToMessage = async (req, res) => {
     const conversationId = message.conversationId?.toString();
 
     if (conversationId) {
-      // Normalize for frontend: ensure id and conversationId are plain strings
-      const emitPayload = {
-        ...message,
-        id: message._id?.toString() || message.id,
-        _id: message._id?.toString() || message._id,
-        conversationId,
-        senderId:
-          message.senderId && typeof message.senderId === "object"
-            ? {
-                ...message.senderId,
-                id: message.senderId._id?.toString() || message.senderId.id,
-                _id: message.senderId._id?.toString(),
-              }
-            : message.senderId,
-        reactions: (message.reactions || []).map((r) => ({
-          ...r,
-          userId: r.userId?.toString?.() ?? r.userId,
-        })),
-      };
-      io.to(conversationId).emit("message:reaction", emitPayload);
-      io.to(conversationId).emit("message:updated", emitPayload);
+
+      io.to(conversationId).emit("message:updated", message);
+      io.to(conversationId).emit("message:reaction", message);
+
     }
 
     res.status(200).json({ success: true, message });
