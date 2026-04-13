@@ -18,8 +18,14 @@ const MessageSchema = new Schema(
     content: { type: String },
     type: {
       type: String,
-      enum: ["text", "image", "video", "audio", "file", "system"],
+      enum: ["text", "image", "video", "audio", "file", "shared_post", "system"],
       default: "text",
+    },
+
+    sharedPostId: {
+      type: Schema.Types.ObjectId,
+      ref: "Post",
+      default: null,
     },
 
     attachments: [
@@ -78,7 +84,27 @@ const MessageSchema = new Schema(
       duration: { type: Number, default: 0 },
       startedAt: { type: Date, default: null },
       endedAt: { type: Date, default: null },
+      participants: [
+        {
+          userId: { type: Schema.Types.ObjectId, ref: "User", default: null },
+          displayName: { type: String, default: null },
+          avatar: { type: String, default: null },
+          joinedAt: { type: Date, default: null },
+        },
+      ],
     },
+
+    reactions: [
+      {
+        userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+        emoji: {
+          type: String,
+          enum: ["like", "love", "haha", "sad", "angry", "wow"],
+          required: true,
+        },
+        reactedAt: { type: Date, default: Date.now },
+      },
+    ],
 
     readBy: [{ type: Schema.Types.ObjectId, ref: "User" }],
     isUnsent: { type: Boolean, default: false },

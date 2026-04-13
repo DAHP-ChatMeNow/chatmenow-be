@@ -53,7 +53,20 @@ router.delete(
   postController.deletePostForAdmin,
 );
 
+router.get("/user/:userId", verifyToken, postController.getUserPosts);
+
+router.post("/:id/share", verifyToken, postController.sharePostToMyTimeline);
+router.post(
+  "/:id/share-to-chat",
+  verifyToken,
+  postController.sharePostToConversation,
+);
+
 router.get("/:id", verifyToken, postController.getPostDetail);
+
+router.patch("/:id/privacy", verifyToken, postController.updateMyPostPrivacy);
+
+router.delete("/:id", verifyToken, postController.deleteMyPost);
 
 router.put("/:id/like", verifyToken, postController.toggleLikePost);
 

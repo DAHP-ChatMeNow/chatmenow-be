@@ -1,8 +1,10 @@
+const mongoose = require("mongoose");
 const Post = require("../models/post.model");
 const Comment = require("../models/comment.model");
 const Notification = require("../models/notification.model");
 const User = require("../models/user.model");
 const aiService = require("./ai.service");
+const chatService = require("./chat.service");
 const { POST_PRIVACY } = require("../../constants");
 const { uploadToS3, getSignedUrlFromS3 } = require("../middleware/storage");
 const {
@@ -14,6 +16,205 @@ class PostService {
     if (!post?.likes || post.likes.length === 0) return false;
     const userIdString = userId.toString();
     return post.likes.some((id) => id.toString() === userIdString);
+  }
+
+  normalizeObjectIdList(rawIds = []) {
+    const input = Array.isArray(rawIds) ? rawIds : [rawIds];
+    const normalized = input
+      .map((id) => String(id || "").trim())
+      .filter(Boolean)
+      .filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+    return [...new Set(normalized)];
+  }
+
+  parseAudienceIds(rawAudienceIds) {
+    if (Array.isArray(rawAudienceIds)) {
+      return this.normalizeObjectIdList(rawAudienceIds);
+    }
+
+    if (typeof rawAudienceIds !== "string") {
+      return [];
+    }
+
+    const trimmed = rawAudienceIds.trim();
+    if (!trimmed) return [];
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return this.normalizeObjectIdList(parsed);
+      }
+    } catch {
+      // Ignore JSON parse error and fall back to comma-separated format.
+    }
+
+    return this.normalizeObjectIdList(trimmed.split(","));
+  }
+
+  getPostAuthorId(post) {
+    if (!post?.authorId) return null;
+    if (typeof post.authorId === "object" && post.authorId._id) {
+      return String(post.authorId._id);
+    }
+    return String(post.authorId);
+  }
+
+  buildFeedVisibilityFilter(userId, friendIds = []) {
+    const normalizedUserId = String(userId);
+    const normalizedFriendIds = this.normalizeObjectIdList(friendIds);
+
+    const visibilityConditions = [
+      { authorId: normalizedUserId },
+      { privacy: POST_PRIVACY.PUBLIC },
+      {
+        privacy: POST_PRIVACY.CUSTOM,
+        customAudienceIds: normalizedUserId,
+      },
+    ];
+
+    if (normalizedFriendIds.length > 0) {
+      visibilityConditions.push({
+        privacy: POST_PRIVACY.FRIENDS,
+        authorId: { $in: normalizedFriendIds },
+      });
+    }
+
+    return {
+      isDeleted: { $ne: true },
+      $or: visibilityConditions,
+    };
+  }
+
+  canViewPost(post, viewerId, friendIdSet = new Set()) {
+    if (!post || !viewerId) return false;
+    if (post.isDeleted) return false;
+
+    const normalizedViewerId = String(viewerId);
+    const authorId = this.getPostAuthorId(post);
+
+    if (authorId === normalizedViewerId) {
+      return true;
+    }
+
+    if (post.privacy === POST_PRIVACY.PUBLIC) {
+      return true;
+    }
+
+    if (
+      post.privacy === POST_PRIVACY.FRIENDS &&
+      friendIdSet.has(String(authorId))
+    ) {
+      return true;
+    }
+
+    if (post.privacy === POST_PRIVACY.CUSTOM) {
+      return (post.customAudienceIds || []).some(
+        (id) => String(id) === normalizedViewerId,
+      );
+    }
+
+    return false;
+  }
+
+  async getViewerFriendIdSet(viewerId) {
+    const viewer = await User.findById(viewerId).select("friends").lean();
+    if (!viewer) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    return new Set(this.normalizeObjectIdList(viewer.friends || []));
+  }
+
+  normalizePrivacy(privacy) {
+    const normalized = String(privacy || POST_PRIVACY.PUBLIC)
+      .trim()
+      .toLowerCase();
+
+    if (!Object.values(POST_PRIVACY).includes(normalized)) {
+      throw {
+        statusCode: 400,
+        message:
+          "privacy không hợp lệ. Chỉ chấp nhận: public, friends, custom, private",
+      };
+    }
+
+    return normalized;
+  }
+
+  async resolveCustomAudience(userId, privacy, rawAudienceIds) {
+    if (privacy !== POST_PRIVACY.CUSTOM) {
+      return [];
+    }
+
+    const audienceIds = this.parseAudienceIds(rawAudienceIds).filter(
+      (id) => id !== String(userId),
+    );
+
+    if (audienceIds.length === 0) {
+      throw {
+        statusCode: 400,
+        message:
+          "Với privacy='custom', bạn phải chọn ít nhất 1 người được xem bài viết",
+      };
+    }
+
+    const owner = await User.findById(userId).select("friends").lean();
+    if (!owner) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    const friendIdSet = new Set(this.normalizeObjectIdList(owner.friends || []));
+    const nonFriendAudienceIds = audienceIds.filter((id) => !friendIdSet.has(id));
+
+    if (nonFriendAudienceIds.length > 0) {
+      throw {
+        statusCode: 400,
+        message: "Chế độ custom chỉ cho phép chọn trong danh sách bạn bè",
+      };
+    }
+
+    const existingAudienceCount = await User.countDocuments({
+      _id: { $in: audienceIds },
+    });
+
+    if (existingAudienceCount !== audienceIds.length) {
+      throw {
+        statusCode: 400,
+        message: "Danh sách customAudienceIds có người dùng không tồn tại",
+      };
+    }
+
+    return audienceIds;
+  }
+
+  async getAccessiblePost(postId, userId) {
+    const [post, viewerFriendIdSet] = await Promise.all([
+      Post.findById(postId),
+      this.getViewerFriendIdSet(userId),
+    ]);
+
+    if (!post || post.isDeleted) {
+      throw {
+        statusCode: 404,
+        message: "Bài viết không tồn tại",
+      };
+    }
+
+    if (!this.canViewPost(post, userId, viewerFriendIdSet)) {
+      throw {
+        statusCode: 403,
+        message: "Bạn không có quyền truy cập bài viết này",
+      };
+    }
+
+    return post;
   }
 
   /**
@@ -47,39 +248,145 @@ class PostService {
     return { ...postObj, media: resolvedMedia };
   }
 
+  async resolveSharedPostForViewer(postObj, viewerId, viewerFriendIdSet = null) {
+    const sharedPostData = postObj?.sharedPost;
+    const originalPostRaw = sharedPostData?.postId;
+
+    if (!sharedPostData || !originalPostRaw) {
+      return postObj;
+    }
+
+    const originalPost =
+      typeof originalPostRaw.toObject === "function"
+        ? originalPostRaw.toObject()
+        : originalPostRaw;
+
+    if (!originalPost || originalPost.isDeleted) {
+      return {
+        ...postObj,
+        sharedPost: {
+          ...sharedPostData,
+          postId: null,
+          isAccessible: false,
+          unavailableReason: "Bài viết gốc đã bị xóa hoặc không tồn tại",
+        },
+      };
+    }
+
+    const friendIdSet = viewerFriendIdSet || (await this.getViewerFriendIdSet(viewerId));
+    if (!this.canViewPost(originalPost, viewerId, friendIdSet)) {
+      return {
+        ...postObj,
+        sharedPost: {
+          ...sharedPostData,
+          postId: null,
+          isAccessible: false,
+          unavailableReason: "Bạn không có quyền xem bài viết gốc",
+        },
+      };
+    }
+
+    const resolvedOriginal = await this.resolvePostMedia({
+      ...originalPost,
+      isLikedByCurrentUser: this.hasUserLikedPost(originalPost, viewerId),
+    });
+
+    return {
+      ...postObj,
+      sharedPost: {
+        ...sharedPostData,
+        postId: {
+          ...resolvedOriginal,
+          isAccessible: true,
+        },
+      },
+    };
+  }
+
+  async resolvePostForViewer(post, viewerId, viewerFriendIdSet = null) {
+    const postObj = typeof post.toObject === "function" ? post.toObject() : post;
+    const withLikeStatus = {
+      ...postObj,
+      isLikedByCurrentUser: this.hasUserLikedPost(postObj, viewerId),
+    };
+    const withMedia = await this.resolvePostMedia(withLikeStatus);
+    return await this.resolveSharedPostForViewer(
+      withMedia,
+      viewerId,
+      viewerFriendIdSet,
+    );
+  }
+
   /**
    * Lấy newsfeed
    */
   async getNewsFeed(userId, { page = 1, limit = 10 }) {
-    const posts = await Post.find({ privacy: POST_PRIVACY.PUBLIC })
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit))
-      .populate("authorId", "displayName avatar");
+    const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
 
-    // Thêm flag isLikedByCurrentUser + resolve media URLs
+    const viewer = await User.findById(userId).select("friends").lean();
+    if (!viewer) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    const visibilityFilter = this.buildFeedVisibilityFilter(
+      userId,
+      viewer.friends || [],
+    );
+
+    const [total, posts] = await Promise.all([
+      Post.countDocuments(visibilityFilter),
+      Post.find(visibilityFilter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip((parsedPage - 1) * parsedLimit)
+        .limit(parsedLimit)
+        .populate("authorId", "displayName avatar")
+        .populate({
+          path: "sharedPost.postId",
+          select:
+            "authorId content media privacy customAudienceIds likes likesCount commentsCount isDeleted createdAt",
+          populate: {
+            path: "authorId",
+            select: "displayName avatar",
+          },
+        }),
+    ]);
+
+    const viewerFriendIdSet = new Set(
+      this.normalizeObjectIdList(viewer.friends || []),
+    );
     const postsWithLikeStatus = await Promise.all(
-      posts.map(async (post) => {
-        const postObj = {
-          ...post.toObject(),
-          isLikedByCurrentUser: this.hasUserLikedPost(post, userId),
-        };
-        return await this.resolvePostMedia(postObj);
-      }),
+      posts.map(async (post) =>
+        this.resolvePostForViewer(post, userId, viewerFriendIdSet),
+      ),
     );
 
     return {
       posts: postsWithLikeStatus,
-      total: posts.length,
-      page: Number(page),
-      limit: Number(limit),
+      total,
+      page: parsedPage,
+      limit: parsedLimit,
     };
   }
 
   /**
    * Tạo bài viết mới
    */
-  async createPost(userId, { content, privacy, videoDurations }, files = []) {
+  async createPost(
+    userId,
+    { content, privacy, videoDurations, customAudienceIds },
+    files = [],
+  ) {
+    const normalizedPrivacy = this.normalizePrivacy(privacy);
+    const resolvedAudienceIds = await this.resolveCustomAudience(
+      userId,
+      normalizedPrivacy,
+      customAudienceIds,
+    );
+
     // Upload media files nếu có
     const mediaArray = [];
 
@@ -131,7 +438,8 @@ class PostService {
     const newPost = await Post.create({
       authorId: userId,
       content,
-      privacy,
+      privacy: normalizedPrivacy,
+      customAudienceIds: resolvedAudienceIds,
       media: mediaArray,
     });
 
@@ -139,29 +447,115 @@ class PostService {
       "authorId",
       "displayName avatar",
     );
-    const postObj = populatedPost.toObject();
-    return await this.resolvePostMedia(postObj);
+    return await this.resolvePostForViewer(populatedPost, userId);
   }
 
   /**
    * Lấy bài viết của user hiện tại
    */
   async getMyPosts(userId, { page = 1, limit = 10 }) {
-    const total = await Post.countDocuments({ authorId: userId });
-    const posts = await Post.find({ authorId: userId })
+    const visibilityFilter = {
+      authorId: userId,
+      isDeleted: { $ne: true },
+    };
+
+    const total = await Post.countDocuments(visibilityFilter);
+    const posts = await Post.find(visibilityFilter)
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit))
-      .populate("authorId", "displayName avatar");
+      .populate("authorId", "displayName avatar")
+      .populate({
+        path: "sharedPost.postId",
+        select:
+          "authorId content media privacy customAudienceIds likes likesCount commentsCount isDeleted createdAt",
+        populate: {
+          path: "authorId",
+          select: "displayName avatar",
+        },
+      });
+
+    const viewerFriendIdSet = await this.getViewerFriendIdSet(userId);
+    const resolvedPosts = await Promise.all(
+      posts.map(async (post) =>
+        this.resolvePostForViewer(post, userId, viewerFriendIdSet),
+      ),
+    );
+
+    return {
+      posts: resolvedPosts,
+      total,
+      page: Number(page),
+      limit: Number(limit),
+    };
+  }
+
+  /**
+   * Lấy bài viết của người khác
+   */
+  async getUserPosts(targetUserId, viewerId, { page = 1, limit = 10 }) {
+    const defaultFilter = {
+      authorId: targetUserId,
+      isDeleted: { $ne: true },
+    };
+
+    let visibilityConditions = [];
+    let viewerFriendIdSet = null;
+
+    if (String(targetUserId) === String(viewerId)) {
+      visibilityConditions = [{}];
+      viewerFriendIdSet = await this.getViewerFriendIdSet(viewerId);
+    } else {
+      const [resolvedViewerFriendIdSet, targetUser] = await Promise.all([
+        this.getViewerFriendIdSet(viewerId),
+        User.findById(targetUserId).select("friends").lean(),
+      ]);
+      viewerFriendIdSet = resolvedViewerFriendIdSet;
+
+      if (!targetUser) {
+        throw {
+          statusCode: 404,
+          message: "Người dùng không tồn tại",
+        };
+      }
+
+      visibilityConditions.push({ privacy: POST_PRIVACY.PUBLIC });
+
+      if (viewerFriendIdSet.has(String(targetUserId))) {
+        visibilityConditions.push({ privacy: POST_PRIVACY.FRIENDS });
+      }
+
+      visibilityConditions.push({
+        privacy: POST_PRIVACY.CUSTOM,
+        customAudienceIds: String(viewerId),
+      });
+    }
+
+    const finalFilter = {
+      ...defaultFilter,
+      $or: visibilityConditions,
+    };
+
+    const total = await Post.countDocuments(finalFilter);
+    const posts = await Post.find(finalFilter)
+      .sort({ createdAt: -1, _id: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit))
+      .populate("authorId", "displayName avatar")
+      .populate({
+        path: "sharedPost.postId",
+        select:
+          "authorId content media privacy customAudienceIds likes likesCount commentsCount isDeleted createdAt",
+        populate: {
+          path: "authorId",
+          select: "displayName avatar",
+        },
+      });
 
     const resolvedPosts = await Promise.all(
-      posts.map(async (post) => {
-        const postObj = {
-          ...post.toObject(),
-          isLikedByCurrentUser: this.hasUserLikedPost(post, userId),
-        };
-        return await this.resolvePostMedia(postObj);
-      }),
+      posts.map(async (post) =>
+        this.resolvePostForViewer(post, viewerId, viewerFriendIdSet),
+      ),
     );
 
     return {
@@ -175,14 +569,74 @@ class PostService {
   /**
    * Lấy chi tiết bài viết
    */
-  async getPostDetail(postId) {
-    const post = await Post.findById(postId).populate(
+  async getPostDetail(postId, viewerId) {
+    const [post, viewerFriendIdSet] = await Promise.all([
+      Post.findById(postId)
+        .populate("authorId", "displayName avatar")
+        .populate({
+          path: "sharedPost.postId",
+          select:
+            "authorId content media privacy customAudienceIds likes likesCount commentsCount isDeleted createdAt",
+          populate: {
+            path: "authorId",
+            select: "displayName avatar",
+          },
+        }),
+      this.getViewerFriendIdSet(viewerId),
+    ]);
+
+    if (!post || post.isDeleted) return null;
+
+    if (!this.canViewPost(post, viewerId, viewerFriendIdSet)) {
+      throw {
+        statusCode: 403,
+        message: "Bạn không có quyền xem bài viết này",
+      };
+    }
+
+    return await this.resolvePostForViewer(post, viewerId, viewerFriendIdSet);
+  }
+
+  async updateMyPostPrivacy(userId, postId, privacy, customAudienceIds) {
+    if (privacy === undefined || privacy === null || String(privacy).trim() === "") {
+      throw {
+        statusCode: 400,
+        message:
+          "Vui lòng cung cấp privacy (public, friends, custom, private)",
+      };
+    }
+
+    const post = await Post.findById(postId);
+    if (!post) {
+      throw {
+        statusCode: 404,
+        message: "Bài viết không tồn tại",
+      };
+    }
+
+    if (String(post.authorId) !== String(userId)) {
+      throw {
+        statusCode: 403,
+        message: "Bạn không có quyền sửa bài viết này",
+      };
+    }
+
+    const normalizedPrivacy = this.normalizePrivacy(privacy);
+    const resolvedAudienceIds = await this.resolveCustomAudience(
+      userId,
+      normalizedPrivacy,
+      customAudienceIds,
+    );
+
+    post.privacy = normalizedPrivacy;
+    post.customAudienceIds = resolvedAudienceIds;
+    await post.save();
+
+    const updatedPost = await Post.findById(postId).populate(
       "authorId",
       "displayName avatar",
     );
-    if (!post) return null;
-    const postObj = post.toObject();
-    return await this.resolvePostMedia(postObj);
+    return await this.resolvePostForViewer(updatedPost, userId);
   }
 
   async getAllPostsForAdmin({
@@ -314,6 +768,7 @@ class PostService {
     const privacyStats = {
       [POST_PRIVACY.PUBLIC]: 0,
       [POST_PRIVACY.FRIENDS]: 0,
+      [POST_PRIVACY.CUSTOM]: 0,
       [POST_PRIVACY.PRIVATE]: 0,
     };
 
@@ -442,17 +897,47 @@ class PostService {
     };
   }
 
-  async updatePostPrivacyForAdmin(postId, privacy) {
-    if (!Object.values(POST_PRIVACY).includes(privacy)) {
+  async updatePostPrivacyForAdmin(postId, privacy, customAudienceIds) {
+    if (privacy === undefined || privacy === null || String(privacy).trim() === "") {
       throw {
         statusCode: 400,
-        message: "Giá trị privacy không hợp lệ",
+        message:
+          "Vui lòng cung cấp privacy (public, friends, custom, private)",
       };
+    }
+
+    const normalizedPrivacy = this.normalizePrivacy(privacy);
+    let resolvedAudienceIds = [];
+
+    if (normalizedPrivacy === POST_PRIVACY.CUSTOM) {
+      resolvedAudienceIds = this.parseAudienceIds(customAudienceIds);
+
+      if (resolvedAudienceIds.length === 0) {
+        throw {
+          statusCode: 400,
+          message:
+            "Với privacy='custom', bạn phải chọn ít nhất 1 người được xem bài viết",
+        };
+      }
+
+      const existingAudienceCount = await User.countDocuments({
+        _id: { $in: resolvedAudienceIds },
+      });
+
+      if (existingAudienceCount !== resolvedAudienceIds.length) {
+        throw {
+          statusCode: 400,
+          message: "Danh sách customAudienceIds có người dùng không tồn tại",
+        };
+      }
     }
 
     const post = await Post.findByIdAndUpdate(
       postId,
-      { privacy },
+      {
+        privacy: normalizedPrivacy,
+        customAudienceIds: resolvedAudienceIds,
+      },
       { new: true },
     ).populate("authorId", "displayName avatar");
 
@@ -494,13 +979,7 @@ class PostService {
    * Toggle like/bỏ like bài viết
    */
   async toggleLikePost(userId, postId) {
-    const post = await Post.findById(postId);
-    if (!post) {
-      throw {
-        statusCode: 404,
-        message: "Bài viết không tồn tại",
-      };
-    }
+    const post = await this.getAccessiblePost(postId, userId);
 
     const isLiked = this.hasUserLikedPost(post, userId);
 
@@ -564,13 +1043,7 @@ class PostService {
    * Unlike bài viết
    */
   async unlikePost(userId, postId) {
-    const post = await Post.findById(postId);
-    if (!post) {
-      throw {
-        statusCode: 404,
-        message: "Bài viết không tồn tại",
-      };
-    }
+    const post = await this.getAccessiblePost(postId, userId);
 
     const isLiked = this.hasUserLikedPost(post, userId);
     if (!isLiked) {
@@ -594,7 +1067,9 @@ class PostService {
   /**
    * Lấy danh sách comment
    */
-  async getComments(postId) {
+  async getComments(postId, userId) {
+    await this.getAccessiblePost(postId, userId);
+
     const comments = await Comment.find({
       postId,
       authorSource: { $ne: "ai" },
@@ -678,17 +1153,11 @@ class PostService {
       };
     }
 
-    const post = await Post.findById(postId)
-      .select("content authorId media createdAt")
+    const postDoc = await this.getAccessiblePost(postId, userId);
+    const post = await Post.findById(postDoc._id)
+      .select("content authorId media createdAt privacy customAudienceIds")
       .populate("authorId", "displayName")
       .lean();
-
-    if (!post) {
-      throw {
-        statusCode: 404,
-        message: "Bài viết không tồn tại",
-      };
-    }
 
     const recentComments = await Comment.find({ postId })
       .sort({ createdAt: -1, _id: -1 })
@@ -795,10 +1264,75 @@ class PostService {
     });
   }
 
+  async sharePostToMyTimeline(
+    userId,
+    sourcePostId,
+    { content, privacy, customAudienceIds } = {},
+  ) {
+    const sourcePost = await this.getAccessiblePost(sourcePostId, userId);
+    const normalizedPrivacy = this.normalizePrivacy(privacy || POST_PRIVACY.PUBLIC);
+    const resolvedAudienceIds = await this.resolveCustomAudience(
+      userId,
+      normalizedPrivacy,
+      customAudienceIds,
+    );
+
+    const newSharedPost = await Post.create({
+      authorId: userId,
+      content: String(content || "").trim(),
+      privacy: normalizedPrivacy,
+      customAudienceIds: resolvedAudienceIds,
+      sharedPost: {
+        postId: sourcePost._id,
+        authorId: sourcePost.authorId,
+        sharedAt: new Date(),
+      },
+    });
+
+    const populatedSharedPost = await Post.findById(newSharedPost._id)
+      .populate("authorId", "displayName avatar")
+      .populate({
+        path: "sharedPost.postId",
+        select:
+          "authorId content media privacy customAudienceIds likes likesCount commentsCount isDeleted createdAt",
+        populate: {
+          path: "authorId",
+          select: "displayName avatar",
+        },
+      });
+
+    return await this.resolvePostForViewer(populatedSharedPost, userId);
+  }
+
+  async sharePostToConversation(
+    userId,
+    sourcePostId,
+    { conversationId, content } = {},
+  ) {
+    if (!conversationId) {
+      throw {
+        statusCode: 400,
+        message: "Thiếu conversationId để chia sẻ bài viết",
+      };
+    }
+
+    await this.getAccessiblePost(sourcePostId, userId);
+
+    return await chatService.sendMessage(userId, {
+      conversationId,
+      type: "shared_post",
+      sharedPostId: sourcePostId,
+      content: String(content || "").trim(),
+      attachments: [],
+    });
+  }
+
   /**
    * Thêm comment
    */
   async addComment(userId, postId, content, replyToCommentId = null) {
+    await this.getAccessiblePost(postId, userId);
+
     let validatedReplyToCommentId = null;
 
     if (replyToCommentId) {
@@ -867,6 +1401,46 @@ class PostService {
     }
 
     return newComment.toObject();
+  }
+
+  async deleteMyPost(userId, postId) {
+    const post = await Post.findById(postId)
+      .select("authorId isDeleted")
+      .lean();
+
+    if (!post) {
+      throw {
+        statusCode: 404,
+        message: "Bài viết không tồn tại",
+      };
+    }
+
+    if (String(post.authorId) !== String(userId)) {
+      throw {
+        statusCode: 403,
+        message: "Bạn không có quyền xóa bài viết này",
+      };
+    }
+
+    if (post.isDeleted) {
+      return {
+        postId,
+        disabled: true,
+      };
+    }
+
+    await Post.findByIdAndUpdate(postId, {
+      $set: {
+        isDeleted: true,
+        deletedAt: new Date(),
+        deletedBy: userId,
+      },
+    });
+
+    return {
+      postId,
+      disabled: true,
+    };
   }
 }
 

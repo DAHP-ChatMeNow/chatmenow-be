@@ -1,5 +1,57 @@
 const authService = require("../service/auth.service");
+const otpService = require("../service/otp.service");
+const Account = require("../models/account.model");
 const { verifyTurnstile } = require("../service/turnstile.service");
+
+exports.sendOtp = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: "Vui lòng nhập địa chỉ email." });
+    }
+
+    // Kiểm tra email đã tồn tại chưa
+    const existingAccount = await Account.findOne({ email });
+    if (existingAccount) {
+      return res
+        .status(400)
+        .json({ message: "Email này đã được sử dụng." });
+    }
+
+    const result = await otpService.sendOtp(email);
+
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      expiresIn: result.expiresIn,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.verifyOtp = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    const result = otpService.verifyOtp(email, otp);
+
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      verified: result.verified,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
 
 exports.register = async (req, res) => {
   try {
@@ -155,5 +207,91 @@ exports.changePassword = async (req, res) => {
       return res.status(error.statusCode).json({ message: error.message });
     }
     res.status(500).json({ message: error.message });
+  }
+};
+
+exports.sendSelfLockOtp = async (req, res) => {
+  try {
+    const result = await authService.sendSelfLockOtp(req.user.accountId);
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      expiresIn: result.expiresIn,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.confirmSelfLock = async (req, res) => {
+  try {
+    const result = await authService.confirmSelfLock(req.user.accountId, req.body);
+    res.status(200).json({
+      success: true,
+      locked: result.locked,
+      message: result.message,
+      statusReason: result.statusReason,
+      lockDuration: result.lockDuration,
+      lockedUntil: result.lockedUntil,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.verifySelfLockOtp = async (req, res) => {
+  try {
+    const result = await authService.verifySelfLockOtp(req.user.accountId, req.body);
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      lockVerificationToken: result.lockVerificationToken,
+      expiresIn: result.expiresIn,
+      expiresAt: result.expiresAt,
+      verificationExpiresAt: result.verificationExpiresAt,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.sendUnlockOtp = async (req, res) => {
+  try {
+    const result = await authService.sendUnlockOtp(req.body);
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      expiresIn: result.expiresIn,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.confirmUnlock = async (req, res) => {
+  try {
+    const result = await authService.confirmUnlockByOtp(req.body);
+    res.status(200).json({
+      success: true,
+      unlocked: result.unlocked,
+      message: result.message,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
   }
 };
