@@ -11,6 +11,14 @@ function getNotificationTypeLabel(type) {
       return "đã thích bài viết của bạn.";
     case "post_comment":
       return "đã bình luận về bài viết của bạn.";
+    case "reel_like":
+      return "đã thích thước phim (reel) của bạn.";
+    case "reel_comment":
+      return "đã bình luận thước phim (reel) của bạn.";
+    case "story_react":
+      return "đã thả cảm xúc về story của bạn.";
+    case "story_reply":
+      return "đã phản hồi story của bạn.";
     case "video_call":
       return "đang gọi cho bạn";
     case "group_invite":
@@ -35,6 +43,20 @@ function pickPreviewImage(notification, referencedDoc) {
       ? referencedDoc.media[0]
       : null;
     return firstMedia?.url || referencedDoc.authorId?.avatar || null;
+  }
+
+  if (
+    notification.type === "reel_like" ||
+    notification.type === "reel_comment"
+  ) {
+    return referencedDoc.videoUrl || referencedDoc.userId?.avatar || null;
+  }
+
+  if (
+    notification.type === "story_react" ||
+    notification.type === "story_reply"
+  ) {
+    return referencedDoc.media?.url || referencedDoc.authorId?.avatar || null;
   }
 
   if (notification.type === "friend_request") {
@@ -62,6 +84,26 @@ async function hydrateReferenced(notification) {
     return await Post.findById(referencedId)
       .populate("authorId", "displayName avatar")
       .select("content media authorId createdAt");
+  }
+
+  if (
+    notification.type === "reel_like" ||
+    notification.type === "reel_comment"
+  ) {
+    const Reel = require("../models/reel.model");
+    return await Reel.findById(referencedId)
+      .populate("userId", "displayName avatar")
+      .select("caption videoUrl userId createdAt");
+  }
+
+  if (
+    notification.type === "story_react" ||
+    notification.type === "story_reply"
+  ) {
+    const Story = require("../models/story.model");
+    return await Story.findById(referencedId)
+      .populate("authorId", "displayName avatar")
+      .select("caption media authorId createdAt");
   }
 
   if (notification.type === "friend_request") {
@@ -94,6 +136,16 @@ function normalizeNotification(notification, referencedDoc) {
     notification.type === "post_comment"
   ) {
     targetUrl = referencedId ? `/posts/${referencedId}` : null;
+  } else if (
+    notification.type === "reel_like" ||
+    notification.type === "reel_comment"
+  ) {
+    targetUrl = referencedId ? `/reels?id=${referencedId}` : "/reels";
+  } else if (
+    notification.type === "story_react" ||
+    notification.type === "story_reply"
+  ) {
+    targetUrl = "/blog";
   } else if (notification.type === "friend_request") {
     targetUrl = referencedId
       ? `/friends/requests/${referencedId}`
