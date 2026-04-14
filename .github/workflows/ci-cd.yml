@@ -93,6 +93,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
 
           script: |
+            set -euo pipefail
+
             IMAGE="ghcr.io/dahp-chatmenow/chatmenow-be:dev-latest"
             CONTAINER="chatmenow-dev"
             ENV_FILE="$HOME/chatmenow-dev/.env"
@@ -189,6 +191,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
 
           script: |
+            set -euo pipefail
+
             IMAGE="ghcr.io/dahp-chatmenow/chatmenow-be:prod-latest"
             CONTAINER="chatmenow-prod"
             ENV_FILE="$HOME/chatmenow-prod/.env"
