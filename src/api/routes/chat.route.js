@@ -11,6 +11,7 @@ router.get(
   verifyToken,
   chatController.getOrCreateAiConversation,
 );
+
 router.post("/ai/message", verifyToken, chatController.sendMessageToAi);
 router.get(
   "/ai/admin/config",
