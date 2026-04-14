@@ -33,6 +33,9 @@ const PostSchema = new Schema(
     isDeleted: { type: Boolean, default: false },
     deletedAt: { type: Date, default: null },
     deletedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    musicUrl: { type: String, default: null },
+    musicTitle: { type: String, default: null },
+    musicArtist: { type: String, default: null },
   },
   { timestamps: true },
 );

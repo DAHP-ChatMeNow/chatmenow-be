@@ -204,6 +204,28 @@ class UploadService {
     return updatedUser;
   }
 
+  async createReelVideoUpload({ userId, fileName, contentType, fileSize }) {
+    if (!contentType || !contentType.startsWith("video/")) {
+      throw { statusCode: 400, message: "Chỉ chấp nhận file video" };
+    }
+
+    const MAX_REEL_SIZE = 200 * 1024 * 1024; // 200 MB
+    if (!fileSize || Number(fileSize) > MAX_REEL_SIZE) {
+      throw { statusCode: 400, message: "Dung lượng video tối đa 200MB" };
+    }
+
+    const key = this.buildUploadKey("reels", userId, fileName || "reel.mp4");
+    const uploadUrl = await getSignedUploadUrlFromS3(key, contentType);
+
+    return {
+      key,
+      uploadUrl,
+      method: "PUT",
+      contentType,
+      expiresIn: 900, // 15 minutes
+    };
+  }
+
   async getPresignedUrl(key) {
     if (!key) {
       throw {

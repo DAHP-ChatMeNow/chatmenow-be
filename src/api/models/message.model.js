@@ -18,7 +18,16 @@ const MessageSchema = new Schema(
     content: { type: String },
     type: {
       type: String,
-      enum: ["text", "image", "video", "audio", "file", "shared_post", "system"],
+      enum: [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file",
+        "shared_post",
+        "system",
+        "music",
+      ],
       default: "text",
     },
 
@@ -26,6 +35,15 @@ const MessageSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: "Post",
       default: null,
+    },
+
+    musicInfo: {
+      title: { type: String, default: null },
+      artist: { type: String, default: null },
+      url: { type: String, default: null },
+      coverUrl: { type: String, default: null },
+      duration: { type: Number, default: 0 },
+      source: { type: String, default: "jamendo" },
     },
 
     attachments: [
@@ -56,14 +74,6 @@ const MessageSchema = new Schema(
       ],
       senderDisplayName: { type: String, default: "" },
     },
-
-    reactions: [
-      {
-        userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
-        emoji: { type: String, required: true },
-        reactedAt: { type: Date, default: Date.now },
-      },
-    ],
 
     // Optional metadata for call-history system messages.
     callInfo: {

@@ -23,6 +23,9 @@ const StorySchema = new Schema(
       },
     ],
     replyCount: { type: Number, default: 0 },
+    musicUrl: { type: String, default: null },
+    musicTitle: { type: String, default: null },
+    musicArtist: { type: String, default: null },
     expiresAt: {
       type: Date,
       required: true,

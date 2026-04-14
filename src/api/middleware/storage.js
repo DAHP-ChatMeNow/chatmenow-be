@@ -56,7 +56,7 @@ const multerPostMedia = multer({
 const multerStoryMedia = multer({
   storage,
   limits: {
-    fileSize: 20 * 1024 * 1024, // 20MB max file size
+    fileSize: 400 * 1024 * 1024, // 20MB max file size
   },
   fileFilter: (req, file, cb) => {
     const allowedMimeTypes = [
