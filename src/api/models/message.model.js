@@ -123,6 +123,8 @@ const MessageSchema = new Schema(
       },
     ],
 
+    mentionAll: { type: Boolean, default: false },
+    mentions: [{ type: Schema.Types.ObjectId, ref: "User" }],
     readBy: [{ type: Schema.Types.ObjectId, ref: "User" }],
     isUnsent: { type: Boolean, default: false },
     unsentAt: { type: Date, default: null },

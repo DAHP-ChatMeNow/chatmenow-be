@@ -25,6 +25,8 @@ function getNotificationTypeLabel(type) {
       return "đã mời bạn vào nhóm.";
     case "group_member_request":
       return "đã gửi yêu cầu thêm thành viên, cần bạn duyệt.";
+    case "mention":
+      return "đã nhắc đến bạn trong cuộc trò chuyện.";
     case "system":
       return "có một thông báo mới.";
     default:
@@ -155,6 +157,10 @@ function normalizeNotification(notification, referencedDoc) {
   } else if (notification.type === "group_invite") {
     targetUrl = referencedId ? `/chat/conversations/${referencedId}` : null;
   } else if (notification.type === "group_member_request") {
+    const conversationId =
+      notification?.metadata?.conversationId || referencedId || null;
+    targetUrl = conversationId ? `/messages/${conversationId}` : null;
+  } else if (notification.type === "mention") {
     const conversationId =
       notification?.metadata?.conversationId || referencedId || null;
     targetUrl = conversationId ? `/messages/${conversationId}` : null;
