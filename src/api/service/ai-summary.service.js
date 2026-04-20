@@ -109,6 +109,54 @@ class AiSummaryService {
     return `${senderName}: ${content}`;
   }
 
+  isPlainTextSummaryMessage(message) {
+    if (!message) return false;
+
+    if (String(message.type || "") !== "text") return false;
+    if (message.isUnsent === true) return false;
+
+    if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+      return false;
+    }
+
+    if (message.replyToMessageId) return false;
+    if (message.sharedPostId) return false;
+    if (message.pollId) return false;
+
+    const normalizedContent = this.sanitizeMessageContent(message.content, 2000);
+    if (!normalizedContent) return false;
+
+    const lowered = normalizedContent.toLowerCase();
+    if (
+      lowered.startsWith("[tin nhắn chuyển tiếp]") ||
+      lowered.startsWith("[tin nhan chuyen tiep]")
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
+  async markPendingStatesAsSummarizedByStateIds(stateIds = []) {
+    if (!Array.isArray(stateIds) || stateIds.length === 0) {
+      return;
+    }
+
+    await AiSummaryMessageState.updateMany(
+      {
+        _id: { $in: stateIds },
+        status: "pending",
+      },
+      {
+        $set: {
+          status: "summarized",
+          summarizedAt: new Date(),
+          summaryRecordId: null,
+        },
+      },
+    );
+  }
+
   getClient(region) {
     if (!this.bedrockClient) {
       this.bedrockClient = new BedrockRuntimeClient({ region });
@@ -272,9 +320,9 @@ class AiSummaryService {
       _id: { $in: messageIds },
       deletedFor: { $ne: userId },
       isUnsent: { $ne: true },
-      type: { $ne: "system" },
+      type: "text",
     })
-      .select("_id content type createdAt senderId")
+      .select("_id content type attachments replyToMessageId sharedPostId pollId isUnsent createdAt senderId")
       .populate("senderId", "displayName avatar")
       .lean();
 
@@ -282,10 +330,12 @@ class AiSummaryService {
       messages.map((message) => [String(message._id), message]),
     );
 
+    const ineligibleStateIds = [];
     const orderedMessages = pendingStates
       .map((state) => {
         const message = messageById.get(String(state.messageId));
-        if (!message) {
+        if (!message || !this.isPlainTextSummaryMessage(message)) {
+          ineligibleStateIds.push(state._id);
           return null;
         }
 
@@ -297,9 +347,67 @@ class AiSummaryService {
       })
       .filter(Boolean);
 
+    if (ineligibleStateIds.length > 0) {
+      await this.markPendingStatesAsSummarizedByStateIds(ineligibleStateIds);
+    }
+
     return {
       totalPending: orderedMessages.length,
       messages: orderedMessages,
+    };
+  }
+
+  async discardPendingSummaryCandidates(
+    userId,
+    conversationId,
+    { messageIds, discardAll } = {},
+  ) {
+    await this.ensureGroupConversationMember(conversationId, userId);
+
+    const shouldDiscardAll = this.parseBoolean(discardAll, false);
+    const normalizedMessageIds = this.normalizeMessageIds(messageIds);
+
+    if (!shouldDiscardAll && normalizedMessageIds.length === 0) {
+      throw {
+        statusCode: 400,
+        message: "Cần chọn tin nhắn để xóa khỏi hàng chờ tóm tắt",
+      };
+    }
+
+    const query = {
+      userId,
+      conversationId,
+      status: "pending",
+    };
+
+    if (!shouldDiscardAll) {
+      query.messageId = { $in: normalizedMessageIds };
+    }
+
+    const updateResult = await AiSummaryMessageState.updateMany(
+      query,
+      {
+        $set: {
+          status: "summarized",
+          summarizedAt: new Date(),
+          summaryRecordId: null,
+        },
+      },
+    );
+
+    const discardedCount = Number(
+      updateResult?.modifiedCount || updateResult?.nModified || 0,
+    );
+
+    const remainingPending = await AiSummaryMessageState.countDocuments({
+      userId,
+      conversationId,
+      status: "pending",
+    });
+
+    return {
+      discardedCount,
+      remainingPending,
     };
   }
 
@@ -924,7 +1032,39 @@ class AiSummaryService {
       .lean();
 
     const pendingMessageIds = pendingStates.map((state) => state.messageId);
-    const unreadCount = pendingMessageIds.length;
+
+    const unreadMessagesRaw = await Message.find({
+      _id: { $in: pendingMessageIds },
+      deletedFor: { $ne: userId },
+      isUnsent: { $ne: true },
+      type: "text",
+    })
+      .sort({ createdAt: 1, _id: 1 })
+      .select("_id content type attachments replyToMessageId sharedPostId pollId isUnsent createdAt senderId")
+      .populate("senderId", "displayName")
+      .lean();
+
+    const unreadMessageById = new Map(
+      unreadMessagesRaw.map((message) => [String(message._id), message]),
+    );
+
+    const ineligibleStateIds = [];
+    const unreadMessages = pendingStates
+      .map((state) => {
+        const message = unreadMessageById.get(String(state.messageId));
+        if (!message || !this.isPlainTextSummaryMessage(message)) {
+          ineligibleStateIds.push(state._id);
+          return null;
+        }
+        return message;
+      })
+      .filter(Boolean);
+
+    if (ineligibleStateIds.length > 0) {
+      await this.markPendingStatesAsSummarizedByStateIds(ineligibleStateIds);
+    }
+
+    const unreadCount = unreadMessages.length;
 
     if (unreadCount < config.minUnreadThreshold && !hasExplicitSelection) {
       return {
@@ -936,25 +1076,6 @@ class AiSummaryService {
         cached: false,
       };
     }
-
-    const unreadMessagesRaw = await Message.find({
-      _id: { $in: pendingMessageIds },
-      deletedFor: { $ne: userId },
-      isUnsent: { $ne: true },
-      type: { $ne: "system" },
-    })
-      .sort({ createdAt: 1, _id: 1 })
-      .select("_id content type isUnsent createdAt senderId")
-      .populate("senderId", "displayName")
-      .lean();
-
-    const unreadMessageById = new Map(
-      unreadMessagesRaw.map((message) => [String(message._id), message]),
-    );
-
-    const unreadMessages = pendingStates
-      .map((state) => unreadMessageById.get(String(state.messageId)))
-      .filter(Boolean);
 
     if (unreadMessages.length === 0) {
       return {
@@ -1274,21 +1395,27 @@ class AiSummaryService {
     const messages = await Message.find({
       _id: { $in: record.summarizedMessageIds || [] },
       deletedFor: { $ne: userId },
+      type: "text",
+      isUnsent: { $ne: true },
     })
       .sort({ createdAt: 1, _id: 1 })
-      .select("_id content type createdAt senderId")
+      .select("_id content type attachments replyToMessageId sharedPostId pollId isUnsent createdAt senderId")
       .populate("senderId", "displayName avatar")
       .lean();
+
+    const eligibleMessages = messages.filter((message) =>
+      this.isPlainTextSummaryMessage(message),
+    );
 
     return {
       summaryId: record._id,
       dayKey: record.dayKey,
       assistantName: record.assistantName,
       summary: record.summary,
-      messages,
+      messages: eligibleMessages,
       summarizedFromAt: record.summarizedFromAt,
       summarizedToAt: record.summarizedToAt,
-      unreadCount: record.unreadCount,
+      unreadCount: eligibleMessages.length,
       usage: record.usage,
       createdAt: record.createdAt,
     };
