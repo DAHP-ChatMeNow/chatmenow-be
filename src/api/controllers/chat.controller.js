@@ -179,6 +179,17 @@ exports.getMessages = async (req, res) => {
       },
     );
 
+    if (result.readSync) {
+      const io = req.app.get("io");
+      if (io) {
+        io.to(String(conversationId)).emit("conversation:read", {
+          ...result.readSync,
+          userId: req.user.userId,
+          source: "getMessages",
+        });
+      }
+    }
+
     res.status(200).json({
       success: true,
       messages: result.messages,
@@ -186,6 +197,7 @@ exports.getMessages = async (req, res) => {
       limit: result.limit,
       hasMore: result.hasMore,
       nextCursor: result.nextCursor,
+      readSync: result.readSync,
     });
   } catch (error) {
     if (error.statusCode) {
@@ -602,6 +614,15 @@ exports.markConversationAsRead = async (req, res) => {
       req.params.conversationId,
       req.user.userId,
     );
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(String(req.params.conversationId)).emit("conversation:read", {
+        ...result,
+        userId: req.user.userId,
+        source: "markConversationAsRead",
+      });
+    }
 
     res.status(200).json({
       success: true,

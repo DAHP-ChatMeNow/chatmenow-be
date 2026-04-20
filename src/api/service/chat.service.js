@@ -7,6 +7,9 @@ const Notification = require("../models/notification.model");
 const pollService = require("./poll.service");
 const { getSignedUrlFromS3 } = require("../middleware/storage");
 const {
+  emitNotificationToUser,
+} = require("../../utils/realtime-notification.helper");
+const {
   CONVERSATION_TYPES,
   MESSAGE_TYPES,
   MEMBER_ROLES,
@@ -33,6 +36,179 @@ class ChatService {
     });
 
     return partnerMember ? this.extractMemberUserId(partnerMember) : null;
+  }
+
+  extractMessageSenderId(message) {
+    const rawSenderId = message?.senderId;
+    if (!rawSenderId) return null;
+    if (typeof rawSenderId === "string") return rawSenderId;
+    return String(rawSenderId?._id || rawSenderId?.id || rawSenderId);
+  }
+
+  extractMessageReadByIds(message) {
+    return (message?.readBy || [])
+      .map((item) => {
+        if (!item) return null;
+        if (typeof item === "string") return item;
+        return String(item?._id || item?.id || item);
+      })
+      .filter(Boolean);
+  }
+
+  decorateMessageReadStatus(message, userId, conversation) {
+    const baseMessage =
+      typeof message?.toObject === "function" ? message.toObject() : message;
+    if (!baseMessage) return baseMessage;
+
+    const normalizedUserId = String(userId);
+    const senderId = this.extractMessageSenderId(baseMessage);
+    const readByIds = this.extractMessageReadByIds(baseMessage);
+    const readBySet = new Set(readByIds.map((id) => String(id)));
+
+    const memberIds = (conversation?.members || [])
+      .map((member) => this.extractMemberUserId(member))
+      .filter(Boolean)
+      .map((id) => String(id));
+    const memberIdSet = new Set(memberIds);
+
+    const isOwnMessage = Boolean(senderId) && String(senderId) === normalizedUserId;
+    const isIncomingMessage = !isOwnMessage;
+
+    const partnerMember =
+      conversation?.type === CONVERSATION_TYPES.PRIVATE
+        ? (conversation?.members || []).find(
+            (member) => String(this.extractMemberUserId(member) || "") !== normalizedUserId,
+          )
+        : null;
+    const partnerId = partnerMember ? String(this.extractMemberUserId(partnerMember)) : null;
+    const partnerLastReadAtMs = partnerMember?.lastReadAt
+      ? new Date(partnerMember.lastReadAt).getTime()
+      : 0;
+    const createdAtMs = baseMessage?.createdAt ? new Date(baseMessage.createdAt).getTime() : 0;
+
+    let isRead = false;
+
+    if (isIncomingMessage) {
+      isRead = readBySet.has(normalizedUserId);
+    } else if (conversation?.type === CONVERSATION_TYPES.PRIVATE && partnerId) {
+      const readByPartner = readBySet.has(partnerId);
+      const seenByLastReadAt =
+        Boolean(partnerLastReadAtMs) &&
+        Boolean(createdAtMs) &&
+        createdAtMs <= partnerLastReadAtMs;
+      isRead = Boolean(readByPartner || seenByLastReadAt);
+    } else {
+      const expectedReadCount = Math.max(memberIdSet.size, 1);
+      isRead = readBySet.size >= expectedReadCount;
+    }
+
+    return {
+      ...baseMessage,
+      isRead,
+      readStatus: isRead ? "read" : "unread",
+    };
+  }
+
+  normalizeMentionUserIds(rawMentionUserIds) {
+    if (!Array.isArray(rawMentionUserIds)) {
+      return [];
+    }
+
+    const uniqueIds = new Set();
+    for (const value of rawMentionUserIds) {
+      const normalized = String(value || "").trim();
+      if (!normalized) continue;
+      if (!mongoose.Types.ObjectId.isValid(normalized)) continue;
+      uniqueIds.add(normalized);
+    }
+
+    return [...uniqueIds];
+  }
+
+  resolveMentionsFromPayload(conversation, senderId, payload = {}) {
+    const {
+      mentionAll = false,
+      mentionUserIds = [],
+      content = "",
+    } = payload || {};
+
+    const senderIdString = String(senderId);
+    const memberIds = (conversation?.members || [])
+      .map((member) => this.extractMemberUserId(member))
+      .filter(Boolean)
+      .map((id) => String(id));
+    const memberIdSet = new Set(memberIds);
+
+    const mentionAllFromText =
+      conversation?.type === CONVERSATION_TYPES.GROUP &&
+      /(^|\s)@all(?=\s|$|[,.!?;:])/i.test(String(content || ""));
+    const isMentionAll = Boolean(mentionAll || mentionAllFromText);
+
+    let mentionedUserIds = this.normalizeMentionUserIds(mentionUserIds)
+      .filter((id) => memberIdSet.has(String(id)))
+      .filter((id) => String(id) !== senderIdString);
+
+    if (isMentionAll && conversation?.type === CONVERSATION_TYPES.GROUP) {
+      mentionedUserIds = memberIds.filter((id) => String(id) !== senderIdString);
+    }
+
+    mentionedUserIds = [...new Set(mentionedUserIds.map((id) => String(id)))];
+
+    return {
+      mentionAll: isMentionAll && conversation?.type === CONVERSATION_TYPES.GROUP,
+      mentionedUserIds,
+    };
+  }
+
+  async createMentionNotifications({
+    conversation,
+    message,
+    senderId,
+    mentionedUserIds = [],
+  }) {
+    if (!Array.isArray(mentionedUserIds) || mentionedUserIds.length === 0) {
+      return;
+    }
+
+    const sender = await User.findById(senderId).select("displayName avatar").lean();
+    const conversationId = String(conversation?._id || message?.conversationId || "");
+    const conversationName =
+      conversation?.type === CONVERSATION_TYPES.GROUP
+        ? String(conversation?.name || "").trim() || "nhóm chat"
+        : "cuộc trò chuyện";
+
+    const notifications = await Notification.insertMany(
+      mentionedUserIds.map((recipientId) => ({
+        recipientId,
+        senderId,
+        type: NOTIFICATION_TYPES.MENTION,
+        referenced: conversationId,
+        message:
+          conversation?.type === CONVERSATION_TYPES.GROUP
+            ? `đã nhắc đến bạn trong nhóm "${conversationName}".`
+            : "đã nhắc đến bạn trong cuộc trò chuyện.",
+        metadata: {
+          conversationId,
+          messageId: String(message?._id || ""),
+          mentionAll: Boolean(message?.mentionAll),
+        },
+      })),
+    );
+
+    for (const notification of notifications) {
+      emitNotificationToUser(notification.recipientId, {
+        ...notification.toObject(),
+        senderName: sender?.displayName || null,
+        senderAvatar: sender?.avatar || null,
+        displayText:
+          conversation?.type === CONVERSATION_TYPES.GROUP
+            ? `${sender?.displayName || "Ai đó"} đã nhắc đến bạn trong nhóm "${conversationName}".`
+            : `${sender?.displayName || "Ai đó"} đã nhắc đến bạn trong cuộc trò chuyện.`,
+        previewImage: sender?.avatar || null,
+        targetUrl: conversationId ? `/messages/${conversationId}` : null,
+        isRead: false,
+      });
+    }
   }
 
   buildBlockMeta(blockedByMe, blockedByOther) {
@@ -709,11 +885,9 @@ class ChatService {
     };
   }
 
-  async markConversationAsRead(conversationId, userId) {
-    const conversation = await this.ensureConversationMember(
-      conversationId,
-      userId,
-    );
+  async markConversationAsRead(conversationId, userId, conversationDoc = null) {
+    const conversation =
+      conversationDoc || (await this.ensureConversationMember(conversationId, userId));
     const now = new Date();
     const member = this.getConversationMember(conversation, userId);
 
@@ -1034,7 +1208,17 @@ class ChatService {
       ? Math.min(Math.max(parsedLimit, 1), 100)
       : 20;
 
-    await this.ensureConversationMember(conversationId, userId);
+    const conversation = await this.ensureConversationMember(conversationId, userId);
+    let readSync = null;
+
+    // Khi người dùng mở đoạn chat (không truyền cursor beforeId), tự động đánh dấu đã đọc.
+    if (!beforeId) {
+      readSync = await this.markConversationAsRead(
+        conversationId,
+        userId,
+        conversation,
+      );
+    }
 
     const query = {
       conversationId,
@@ -1059,6 +1243,7 @@ class ChatService {
       .sort({ createdAt: -1, _id: -1 })
       .limit(safeLimit + 1)
       .populate("senderId", "displayName avatar")
+      .populate("mentions", "displayName avatar")
       .populate({
         path: "replyToMessageId",
         select: "content type attachments isUnsent unsentAt senderId",
@@ -1090,7 +1275,7 @@ class ChatService {
           const pollView = pollService.buildPollView(enhanced.pollId, userId);
           enhanced = { ...enhanced.toObject?.() || enhanced, poll: pollView };
         }
-        return enhanced;
+        return this.decorateMessageReadStatus(enhanced, userId, conversation);
       }),
     );
     const nextCursor = hasMore && ordered.length ? ordered[0]._id : null;
@@ -1101,6 +1286,7 @@ class ChatService {
       limit: safeLimit,
       hasMore,
       nextCursor,
+      readSync,
     };
   }
 
@@ -1116,6 +1302,8 @@ class ChatService {
       attachments = [],
       replyToMessageId = null,
       sharedPostId = null,
+      mentionUserIds = [],
+      mentionAll = false,
     },
   ) {
     const conversation = await this.ensureConversationMember(
@@ -1188,6 +1376,12 @@ class ChatService {
         ? resolvedReplyTarget.replyPreview
         : null;
 
+    const mentionMeta = this.resolveMentionsFromPayload(conversation, senderId, {
+      content: trimmedContent,
+      mentionUserIds,
+      mentionAll,
+    });
+
     const message = await Message.create({
       conversationId,
       senderId,
@@ -1197,10 +1391,13 @@ class ChatService {
       sharedPostId: normalizedSharedPostId,
       replyToMessageId: safeReplyToMessageId,
       replyPreview: safeReplyPreview,
+      mentionAll: mentionMeta.mentionAll,
+      mentions: mentionMeta.mentionedUserIds,
       readBy: [senderId],
     });
 
     await message.populate("senderId", "displayName avatar");
+    await message.populate("mentions", "displayName avatar");
     await message.populate({
       path: "replyToMessageId",
       select: "content type attachments isUnsent unsentAt senderId",
@@ -1217,6 +1414,13 @@ class ChatService {
         path: "authorId",
         select: "displayName avatar",
       },
+    });
+
+    await this.createMentionNotifications({
+      conversation,
+      message,
+      senderId,
+      mentionedUserIds: mentionMeta.mentionedUserIds,
     });
 
     await Conversation.findByIdAndUpdate(conversationId, {
@@ -1273,6 +1477,8 @@ class ChatService {
     message.sharedPostId = null;
     message.replyToMessageId = null;
     message.replyPreview = null;
+    message.mentionAll = false;
+    message.mentions = [];
     message.isEdited = false;
     message.editedAt = null;
 

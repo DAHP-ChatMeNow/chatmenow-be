@@ -6,6 +6,7 @@ const NOTIFICATION_TYPES = {
   SYSTEM: "system",
   GROUP_INVITE: "group_invite",
   GROUP_MEMBER_REQUEST: "group_member_request",
+  MENTION: "mention",
   VIDEO_CALL: "video_call",
 };
 
