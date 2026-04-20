@@ -118,6 +118,12 @@ router.get(
   chatController.getUnreadSummaryCandidates,
 );
 
+router.post(
+  "/conversations/:conversationId/unread-summary/candidates/discard",
+  verifyToken,
+  chatController.discardUnreadSummaryCandidates,
+);
+
 router.get(
   "/conversations/:conversationId/unread-summary/history",
   verifyToken,

@@ -2056,7 +2056,11 @@ class ChatService {
 
       const requestId = new mongoose.Types.ObjectId().toString();
 
-      await Notification.insertMany(
+      const requester = await User.findById(userId)
+        .select("displayName avatar")
+        .lean();
+
+      const createdNotifications = await Notification.insertMany(
         adminIds.map((adminId) => ({
           recipientId: adminId,
           senderId: userId,
@@ -2073,6 +2077,15 @@ class ChatService {
         })),
       );
 
+      createdNotifications.forEach((notification) => {
+        emitNotificationToUser(notification.recipientId, {
+          ...notification.toObject(),
+          senderName: requester?.displayName || null,
+          senderAvatar: requester?.avatar || null,
+          isRead: false,
+        });
+      });
+
       return {
         conversation: null,
         joined: false,
@@ -2086,9 +2099,28 @@ class ChatService {
       userId,
       role: MEMBER_ROLES.MEMBER,
     });
-    await group.save();
+    const joiningUser = await User.findById(userId).select("displayName");
+    const joiningName = joiningUser?.displayName || "Thành viên mới";
+    const systemContent = `${joiningName} đã tham gia nhóm`;
 
+    const systemMessage = await Message.create({
+      conversationId,
+      senderId: userId,
+      content: systemContent,
+      type: MESSAGE_TYPES.SYSTEM,
+    });
+
+    group.lastMessage = {
+      content: systemContent,
+      senderId: userId,
+      senderName: joiningName,
+      type: MESSAGE_TYPES.SYSTEM,
+      createdAt: systemMessage.createdAt,
+    };
+
+    await group.save();
     await group.populate("members.userId", "displayName avatar isOnline");
+    await systemMessage.populate("senderId", "displayName avatar");
 
     return {
       conversation: group,
@@ -2096,6 +2128,12 @@ class ChatService {
       alreadyMember: false,
       requestCreated: false,
       pendingApproval: false,
+      systemMessage,
+      memberIds: group.members.map((member) =>
+        member.userId?._id
+          ? String(member.userId._id)
+          : String(member.userId),
+      ),
     };
   }
 
@@ -2261,7 +2299,11 @@ class ChatService {
 
     const requestId = new mongoose.Types.ObjectId().toString();
 
-    await Notification.insertMany(
+    const requester = await User.findById(userId)
+      .select("displayName avatar")
+      .lean();
+
+    const createdNotifications = await Notification.insertMany(
       adminMembers.map((admin) => ({
         recipientId: admin.userId,
         senderId: userId,
@@ -2276,6 +2318,15 @@ class ChatService {
         },
       })),
     );
+
+    createdNotifications.forEach((notification) => {
+      emitNotificationToUser(notification.recipientId, {
+        ...notification.toObject(),
+        senderName: requester?.displayName || null,
+        senderAvatar: requester?.avatar || null,
+        isRead: false,
+      });
+    });
 
     await group.populate("members.userId", "displayName avatar isOnline");
 
@@ -2353,6 +2404,40 @@ class ChatService {
     const updated = await group.save();
     await updated.populate("members.userId", "displayName avatar isOnline");
 
+    let systemMessage = null;
+    if (membersToAdd.length > 0) {
+      let systemContent = `${membersToAdd.length} thành viên đã tham gia nhóm`;
+      const firstAddedMember = await User.findById(membersToAdd[0]).select(
+        "displayName",
+      );
+
+      if (membersToAdd.length === 1) {
+        const addedName = firstAddedMember?.displayName || "Thành viên mới";
+        systemContent = `${addedName} đã tham gia nhóm`;
+      }
+
+      systemMessage = await Message.create({
+        conversationId: targetConversationId,
+        senderId: membersToAdd[0],
+        content: systemContent,
+        type: MESSAGE_TYPES.SYSTEM,
+      });
+
+      updated.lastMessage = {
+        content: systemContent,
+        senderId: membersToAdd[0],
+        senderName:
+          membersToAdd.length === 1
+            ? firstAddedMember?.displayName || "Thành viên mới"
+            : "Hệ thống",
+        type: MESSAGE_TYPES.SYSTEM,
+        createdAt: systemMessage.createdAt,
+      };
+
+      await updated.save();
+      await systemMessage.populate("senderId", "displayName avatar");
+    }
+
     if (membersToAdd.length > 0) {
       await Notification.insertMany(
         membersToAdd.map((memberId) => ({
@@ -2390,6 +2475,12 @@ class ChatService {
     return {
       conversation: updated,
       addedCount: membersToAdd.length,
+      systemMessage,
+      memberIds: updated.members.map((member) =>
+        member.userId?._id
+          ? String(member.userId._id)
+          : String(member.userId),
+      ),
     };
   }
 
@@ -2442,14 +2533,44 @@ class ChatService {
       };
     }
 
+    const removedUser = await User.findById(memberId).select("displayName");
+    const removedName = removedUser?.displayName || "Thành viên";
+
     // Xóa thành viên
     group.members = group.members.filter(
       (m) => m.userId.toString() !== memberId,
     );
-    const updated = await group.save();
-    await updated.populate("members.userId", "displayName avatar isOnline");
+    let updated = await group.save();
 
-    return updated;
+    const systemContent = `${removedName} đã bị mời khỏi nhóm`;
+    const systemMessage = await Message.create({
+      conversationId,
+      senderId: userId,
+      content: systemContent,
+      type: MESSAGE_TYPES.SYSTEM,
+    });
+
+    updated.lastMessage = {
+      content: systemContent,
+      senderId: userId,
+      senderName: "Hệ thống",
+      type: MESSAGE_TYPES.SYSTEM,
+      createdAt: systemMessage.createdAt,
+    };
+
+    updated = await updated.save();
+    await updated.populate("members.userId", "displayName avatar isOnline");
+    await systemMessage.populate("senderId", "displayName avatar");
+
+    return {
+      conversation: updated,
+      systemMessage,
+      remainingMemberIds: updated.members.map((member) =>
+        member.userId?._id
+          ? String(member.userId._id)
+          : String(member.userId),
+      ),
+    };
   }
 
   /**

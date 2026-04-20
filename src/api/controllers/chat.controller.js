@@ -337,6 +337,32 @@ exports.getUnreadSummaryCandidates = async (req, res) => {
   }
 };
 
+exports.discardUnreadSummaryCandidates = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { messageIds, discardAll } = req.body || {};
+
+    const result = await aiSummaryService.discardPendingSummaryCandidates(
+      req.user.userId,
+      conversationId,
+      {
+        messageIds,
+        discardAll,
+      },
+    );
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.getUnreadSummaryHistory = async (req, res) => {
   try {
     const { conversationId } = req.params;
@@ -706,6 +732,17 @@ exports.joinGroupByLink = async (req, res) => {
 
     const result = await chatService.joinGroupByLink(userId, conversationId);
 
+    if (result?.systemMessage) {
+      const io = req.app.get("io");
+      io.to(String(conversationId)).emit("newMessage", result.systemMessage);
+      io.to(String(conversationId)).emit("message:new", result.systemMessage);
+
+      for (const memberId of result.memberIds || []) {
+        io.to(String(memberId)).emit("newMessage", result.systemMessage);
+        io.to(String(memberId)).emit("message:new", result.systemMessage);
+      }
+    }
+
     res.status(200).json({
       success: true,
       conversation: result.conversation || null,
@@ -758,6 +795,22 @@ exports.approveGroupMemberRequest = async (req, res) => {
       notificationId,
     );
 
+    if (result?.systemMessage) {
+      const targetConversationId =
+        result?.conversation?._id || result?.conversation?.id;
+      const io = req.app.get("io");
+
+      if (targetConversationId) {
+        io.to(String(targetConversationId)).emit("newMessage", result.systemMessage);
+        io.to(String(targetConversationId)).emit("message:new", result.systemMessage);
+      }
+
+      for (const memberId of result.memberIds || []) {
+        io.to(String(memberId)).emit("newMessage", result.systemMessage);
+        io.to(String(memberId)).emit("message:new", result.systemMessage);
+      }
+    }
+
     res.status(200).json({
       success: true,
       conversation: result.conversation,
@@ -776,13 +829,27 @@ exports.removeMemberFromGroup = async (req, res) => {
     const userId = req.user.userId;
     const { conversationId, memberId } = req.params;
 
-    const updated = await chatService.removeMemberFromGroup(
+    const result = await chatService.removeMemberFromGroup(
       userId,
       conversationId,
       memberId,
     );
 
-    res.status(200).json({ success: true, conversation: updated });
+    if (result?.systemMessage) {
+      const io = req.app.get("io");
+      io.to(String(conversationId)).emit("newMessage", result.systemMessage);
+      io.to(String(conversationId)).emit("message:new", result.systemMessage);
+
+      for (const remainingMemberId of result.remainingMemberIds || []) {
+        io.to(String(remainingMemberId)).emit("newMessage", result.systemMessage);
+        io.to(String(remainingMemberId)).emit("message:new", result.systemMessage);
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      conversation: result?.conversation || result,
+    });
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ message: error.message });
