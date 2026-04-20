@@ -105,6 +105,11 @@ router.patch(
   verifyToken,
   chatController.markConversationAsRead,
 );
+router.post(
+  "/conversations/:conversationId/clear",
+  verifyToken,
+  chatController.clearConversationHistory,
+);
 
 router.post(
   "/conversations/:conversationId/unread-summary",

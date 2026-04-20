@@ -19,6 +19,11 @@ const ConversationSchema = new Schema({
     lastReadAt: { type: Date } 
   }],
 
+  memberSettings: [{
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    lastClearedAt: { type: Date, default: null },
+  }],
+
   
   lastMessage: {
     content: { type: String, default: null },
