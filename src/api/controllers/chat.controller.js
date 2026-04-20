@@ -636,6 +636,36 @@ exports.markConversationAsRead = async (req, res) => {
   }
 };
 
+exports.clearConversationHistory = async (req, res) => {
+  try {
+    const result = await chatService.clearConversationHistory(
+      req.params.conversationId,
+      req.user.userId,
+    );
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(String(req.params.conversationId)).emit("conversation:cleared", {
+        conversationId: req.params.conversationId,
+        userId: req.user.userId,
+        lastClearedAt: result.lastClearedAt,
+        source: "clearConversationHistory",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      conversationId: req.params.conversationId,
+      lastClearedAt: result.lastClearedAt,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.getOrCreatePrivateConversation = async (req, res) => {
   try {
     const userId = req.user.userId;

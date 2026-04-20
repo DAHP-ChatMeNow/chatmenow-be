@@ -752,7 +752,7 @@ class ChatService {
     const pinnedMessages = await Message.find({
       _id: { $in: messageIds },
       conversationId,
-      deletedFor: { $ne: userId },
+      ...this.buildMessageVisibilityFilter(userId),
       isUnsent: { $ne: true },
     })
       .populate("senderId", "displayName avatar")
@@ -788,7 +788,7 @@ class ChatService {
   async ensureConversationMember(conversationId, userId) {
     const conversation = await Conversation.findById(conversationId)
       .select(
-        "_id type pinManagementEnabled pinnedMessages members.userId members.role members.lastReadAt",
+        "_id type pinManagementEnabled pinnedMessages members.userId members.role members.lastReadAt memberSettings.userId memberSettings.lastClearedAt",
       )
       .lean();
 
@@ -838,11 +838,34 @@ class ChatService {
     );
   }
 
+  getConversationMemberSettings(conversation, userId) {
+    return (conversation?.memberSettings || []).find(
+      (setting) => String(setting.userId) === String(userId),
+    );
+  }
+
+  getConversationVisibilityBoundary(conversation, userId) {
+    const memberSettings = this.getConversationMemberSettings(conversation, userId);
+    const lastClearedAtMs = memberSettings?.lastClearedAt
+      ? new Date(memberSettings.lastClearedAt).getTime()
+      : 0;
+
+    // Visibility should only be cut by explicit clear-history action.
+    return lastClearedAtMs || 0;
+  }
+
+  buildMessageVisibilityFilter(userId) {
+    return {
+      hiddenForAll: { $ne: true },
+      hiddenForMe: { $ne: userId },
+      deletedFor: { $ne: userId },
+    };
+  }
   async getConversationUnreadCount(conversationId, userId, conversationDoc) {
     const conversation =
       conversationDoc ||
       (await Conversation.findById(conversationId)
-        .select("_id members.userId members.lastReadAt")
+        .select("_id members.userId members.lastReadAt memberSettings.userId memberSettings.lastClearedAt")
         .lean());
 
     if (!conversation) {
@@ -854,14 +877,23 @@ class ChatService {
       return 0;
     }
 
+    const clearBoundaryMs = this.getConversationVisibilityBoundary(
+      conversation,
+      userId,
+    );
+    const lastReadAtMs = member?.lastReadAt
+      ? new Date(member.lastReadAt).getTime()
+      : 0;
+    const unreadBoundaryMs = Math.max(lastReadAtMs, clearBoundaryMs);
+
     const query = {
       conversationId,
       senderId: { $ne: userId },
-      deletedFor: { $ne: userId },
+      ...this.buildMessageVisibilityFilter(userId),
     };
 
-    if (member.lastReadAt) {
-      query.createdAt = { $gt: member.lastReadAt };
+    if (unreadBoundaryMs > 0) {
+      query.createdAt = { $gt: new Date(unreadBoundaryMs) };
     }
 
     return Message.countDocuments(query);
@@ -879,9 +911,23 @@ class ChatService {
       plainConversation,
     );
 
+    const clearBoundaryMs = this.getConversationVisibilityBoundary(
+      plainConversation,
+      userId,
+    );
+
+    let lastMessage = plainConversation.lastMessage;
+    if (lastMessage && lastMessage.createdAt) {
+      const lastMsgCreatedAt = new Date(lastMessage.createdAt).getTime();
+      if (lastMsgCreatedAt <= clearBoundaryMs) {
+        lastMessage = null;
+      }
+    }
+
     return {
       ...plainConversation,
       unreadCount,
+      lastMessage,
     };
   }
 
@@ -889,16 +935,24 @@ class ChatService {
     const conversation =
       conversationDoc || (await this.ensureConversationMember(conversationId, userId));
     const now = new Date();
+    const clearBoundaryMs = this.getConversationVisibilityBoundary(
+      conversation,
+      userId,
+    );
     const member = this.getConversationMember(conversation, userId);
+    const lastReadAtMs = member?.lastReadAt
+      ? new Date(member.lastReadAt).getTime()
+      : 0;
+    const readBoundaryMs = Math.max(lastReadAtMs, clearBoundaryMs);
 
     const readQuery = {
       conversationId,
       senderId: { $ne: userId },
-      deletedFor: { $ne: userId },
+      ...this.buildMessageVisibilityFilter(userId),
     };
 
-    if (member?.lastReadAt) {
-      readQuery.createdAt = { $gt: member.lastReadAt };
+    if (readBoundaryMs > 0) {
+      readQuery.createdAt = { $gt: new Date(readBoundaryMs) };
     }
 
     await Promise.all([
@@ -921,8 +975,50 @@ class ChatService {
     };
   }
 
+  async clearConversationHistory(conversationId, userId) {
+    const conversation = await this.ensureConversationMember(conversationId, userId);
+    const now = new Date();
+
+    const existingIndex = Array.isArray(conversation.memberSettings)
+      ? conversation.memberSettings.findIndex(
+          (setting) => String(setting.userId) === String(userId),
+        )
+      : -1;
+
+    if (existingIndex >= 0) {
+      await Conversation.updateOne(
+        { _id: conversationId, "memberSettings.userId": userId },
+        {
+          $set: {
+            "memberSettings.$.lastClearedAt": now,
+          },
+        },
+      );
+    } else {
+      await Conversation.updateOne(
+        { _id: conversationId },
+        {
+          $push: {
+            memberSettings: {
+              userId,
+              lastClearedAt: now,
+            },
+          },
+        },
+      );
+    }
+
+    return {
+      conversationId,
+      lastClearedAt: now,
+    };
+  }
+
   async refreshConversationLastMessage(conversationId) {
-    const latestMessage = await Message.findOne({ conversationId })
+    const latestMessage = await Message.findOne({
+      conversationId,
+      hiddenForAll: { $ne: true },
+    })
       .sort({ createdAt: -1, _id: -1 })
       .populate("senderId", "displayName")
       .lean();
@@ -1210,6 +1306,10 @@ class ChatService {
 
     const conversation = await this.ensureConversationMember(conversationId, userId);
     let readSync = null;
+    const visibilityBoundaryMs = this.getConversationVisibilityBoundary(
+      conversation,
+      userId,
+    );
 
     // Khi người dùng mở đoạn chat (không truyền cursor beforeId), tự động đánh dấu đã đọc.
     if (!beforeId) {
@@ -1222,20 +1322,31 @@ class ChatService {
 
     const query = {
       conversationId,
-      deletedFor: { $ne: userId },
+      ...this.buildMessageVisibilityFilter(userId),
     };
+
+    if (visibilityBoundaryMs > 0) {
+      query.createdAt = { $gt: new Date(visibilityBoundaryMs) };
+    }
 
     if (beforeId) {
       const referenceMsg =
         await Message.findById(beforeId).select("_id createdAt");
       if (referenceMsg) {
-        query.$or = [
+        const beforeCursorFilter = [
           { createdAt: { $lt: referenceMsg.createdAt } },
           {
             createdAt: referenceMsg.createdAt,
             _id: { $lt: referenceMsg._id },
           },
         ];
+
+        if (query.createdAt) {
+          query.$and = [{ createdAt: query.createdAt }, { $or: beforeCursorFilter }];
+          delete query.createdAt;
+        } else {
+          query.$or = beforeCursorFilter;
+        }
       }
     }
 
@@ -1512,13 +1623,61 @@ class ChatService {
 
     await Message.updateOne(
       { _id: messageId },
-      { $addToSet: { deletedFor: userId } },
+      {
+        $addToSet: {
+          hiddenForMe: userId,
+          deletedFor: userId,
+        },
+      },
     );
 
     return {
       _id: messageId,
       conversationId: message.conversationId,
-      deletedForUserId: userId,
+      hiddenForUserId: userId,
+    };
+  }
+
+  async deleteMessageForEveryone(userId, messageId) {
+    const message = await Message.findById(messageId);
+    if (!message) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy tin nhắn",
+      };
+    }
+
+    await this.ensureConversationMember(message.conversationId, userId);
+
+    if (String(message.senderId) !== String(userId)) {
+      throw {
+        statusCode: 403,
+        message: "Bạn chỉ có thể xóa toàn bộ tin nhắn của chính mình",
+      };
+    }
+
+    await Message.updateOne(
+      { _id: messageId },
+      { $set: { hiddenForAll: true } },
+    );
+
+    await Conversation.updateOne(
+      { _id: message.conversationId },
+      {
+        $pull: {
+          pinnedMessages: {
+            messageId: message._id,
+          },
+        },
+      },
+    );
+
+    await this.refreshConversationLastMessage(message.conversationId);
+
+    return {
+      messageId,
+      conversationId: message.conversationId,
+      deletedByUserId: userId,
     };
   }
 
@@ -1757,7 +1916,7 @@ class ChatService {
     const targetMessage = await Message.findOne({
       _id: normalizedMessageId,
       conversationId,
-      deletedFor: { $ne: userId },
+      ...this.buildMessageVisibilityFilter(userId),
     })
       .select("_id isUnsent")
       .lean();
