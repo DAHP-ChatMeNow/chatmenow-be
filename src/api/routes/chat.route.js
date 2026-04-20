@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const chatController = require("../controllers/chat.controller");
+const pollController = require("../controllers/poll.controller");
 const { verifyToken, requireAdmin } = require("../middleware/authMiddleware");
 const { multerUploads } = require("../middleware/storage");
 
@@ -203,5 +204,16 @@ router.delete(
   verifyToken,
   chatController.dissolveGroup,
 );
+
+// ── Poll routes ──────────────────────────────────────────────────────────────
+router.post(
+  "/conversations/:conversationId/polls",
+  verifyToken,
+  pollController.createPoll,
+);
+router.get("/polls/:pollId", verifyToken, pollController.getPoll);
+router.post("/polls/:pollId/vote", verifyToken, pollController.vote);
+router.post("/polls/:pollId/options", verifyToken, pollController.addOption);
+router.post("/polls/:pollId/close", verifyToken, pollController.closePoll);
 
 module.exports = router;

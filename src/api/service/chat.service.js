@@ -4,6 +4,7 @@ const Message = require("../models/message.model");
 const Post = require("../models/post.model");
 const User = require("../models/user.model");
 const Notification = require("../models/notification.model");
+const pollService = require("./poll.service");
 const { getSignedUrlFromS3 } = require("../middleware/storage");
 const {
   CONVERSATION_TYPES,
@@ -1074,16 +1075,23 @@ class ChatService {
           path: "authorId",
           select: "displayName avatar",
         },
-      });
+      })
+      .populate("pollId")
+      .lean();
 
     const hasMore = messages.length > safeLimit;
     const pagedMessages = hasMore ? messages.slice(0, safeLimit) : messages;
     const ordered = pagedMessages.reverse();
     const viewerFriendIdSet = await this.getViewerFriendIdSet(userId);
     const resolvedMessages = await Promise.all(
-      ordered.map((message) =>
-        this.decorateMessageWithSharedPost(message, userId, viewerFriendIdSet),
-      ),
+      ordered.map(async (message) => {
+        let enhanced = await this.decorateMessageWithSharedPost(message, userId, viewerFriendIdSet);
+        if (enhanced.type === "poll" && enhanced.pollId) {
+          const pollView = pollService.buildPollView(enhanced.pollId, userId);
+          enhanced = { ...enhanced.toObject?.() || enhanced, poll: pollView };
+        }
+        return enhanced;
+      }),
     );
     const nextCursor = hasMore && ordered.length ? ordered[0]._id : null;
 

@@ -27,6 +27,7 @@ const MessageSchema = new Schema(
         "shared_post",
         "system",
         "music",
+        "poll",
       ],
       default: "text",
     },
@@ -34,6 +35,12 @@ const MessageSchema = new Schema(
     sharedPostId: {
       type: Schema.Types.ObjectId,
       ref: "Post",
+      default: null,
+    },
+
+    pollId: {
+      type: Schema.Types.ObjectId,
+      ref: "Poll",
       default: null,
     },
 
