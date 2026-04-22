@@ -5,6 +5,7 @@ const Notification = require("../models/notification.model");
 const User = require("../models/user.model");
 const aiService = require("./ai.service");
 const chatService = require("./chat.service");
+const premiumService = require("./premium.service");
 const { POST_PRIVACY } = require("../../constants");
 const { uploadToS3, getSignedUrlFromS3 } = require("../middleware/storage");
 const {
@@ -472,6 +473,20 @@ class PostService {
     { content, privacy, videoDurations, customAudienceIds },
     files = [],
   ) {
+    const normalizedVideoDurations = Array.isArray(videoDurations)
+      ? videoDurations.map((item) => Number(item || 0))
+      : typeof videoDurations === "string"
+        ? videoDurations
+            .split(",")
+            .map((item) => Number(String(item || "").trim() || 0))
+        : [];
+
+    await premiumService.enforcePostCreation(userId, {
+      videoDurations: normalizedVideoDurations.filter(
+        (item) => Number.isFinite(item) && item > 0,
+      ),
+    });
+
     const normalizedPrivacy = this.normalizePrivacy(privacy);
     const resolvedAudienceIds = await this.resolveCustomAudience(
       userId,
@@ -489,19 +504,12 @@ class PostService {
         // Xác định loại file (image hoặc video)
         const fileType = file.mimetype.startsWith("image/") ? "image" : "video";
 
-        // Validate thời lượng video không quá 5 phút (300 giây)
+        // Duration limits are controlled by Premium configuration.
         if (fileType === "video") {
           const duration =
             videoDurations && videoDurations[videoIndex]
               ? parseFloat(videoDurations[videoIndex])
               : 0;
-
-          if (duration > 300) {
-            throw {
-              statusCode: 400,
-              message: `Video ${videoIndex + 1} có thời lượng ${Math.round(duration)}s, vượt quá giới hạn 5 phút (300s)`,
-            };
-          }
 
           videoIndex++;
         }

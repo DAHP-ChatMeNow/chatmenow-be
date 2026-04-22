@@ -5,13 +5,30 @@ exports.createReel = async (req, res) => {
         const userId = req.user.userId;
 
         // videoKey should be the S3 key that the client already uploaded via presigned URL
-        const { videoKey, caption, musicUrl, musicTitle, musicArtist } = req.body;
+        const {
+            videoKey,
+            caption,
+            musicUrl,
+            musicTitle,
+            musicArtist,
+            videoDuration,
+        } = req.body;
 
         if (!videoKey) {
             return res.status(400).json({ message: "videoKey là bắt buộc" });
         }
 
-        const reel = await reelService.createReel(userId, { caption, musicUrl, musicTitle, musicArtist }, videoKey);
+        const reel = await reelService.createReel(
+            userId,
+            {
+                caption,
+                musicUrl,
+                musicTitle,
+                musicArtist,
+                videoDuration,
+            },
+            videoKey,
+        );
 
         return res.status(201).json({ success: true, reel });
     } catch (error) {

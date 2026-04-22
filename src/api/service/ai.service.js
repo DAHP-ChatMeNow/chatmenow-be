@@ -7,6 +7,7 @@ const Message = require("../models/message.model");
 const Post = require("../models/post.model");
 const Comment = require("../models/comment.model");
 const Setting = require("../models/setting.model");
+const premiumService = require("./premium.service");
 const { uploadToS3, getSignedUrlFromS3 } = require("../middleware/storage");
 const { CONVERSATION_TYPES } = require("../../constants");
 
@@ -839,6 +840,8 @@ class AiService {
   }
 
   async getOrCreateAiConversation(userId) {
+    await premiumService.enforceAiAccess(userId);
+
     const aiConfig = this.normalizeAiConfigResponse(
       await this.getOrCreateAiSettings(),
     );
@@ -1014,6 +1017,8 @@ class AiService {
       timeoutMs = 8000,
     },
   ) {
+    await premiumService.enforceAiAccess(userId);
+
     const aiConfig = this.normalizeAiConfigResponse(
       await this.getOrCreateAiSettings(),
     );

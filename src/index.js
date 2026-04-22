@@ -3,6 +3,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const connectDB = require("./config/db");
 const routes = require("./api/routes/index");
+const paymentPublicRoutes = require("./api/routes/payment-public.route");
 const initializeSocket = require("./sockets/socket.handler");
 const { setNotificationIo } = require("./utils/realtime-notification.helper");
 const { apiKeyMiddleware } = require("./api/middleware/apiKeyMiddleware");
@@ -56,6 +57,7 @@ setNotificationIo(io);
 initializeSocket(io);
 startAiSummaryWorker();
 
+app.use("/", paymentPublicRoutes);
 app.use("/api", apiKeyMiddleware, routes);
 
 const PORT = process.env.PORT;

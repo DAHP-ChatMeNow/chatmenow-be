@@ -47,46 +47,86 @@ class AiSummaryService {
     return {
       assistantName: String(process.env.AI_SUMMARY_ASSISTANT_NAME || "DanhAI"),
       modelId: String(process.env.AI_SUMMARY_BEDROCK_MODEL_ID || "").trim(),
-      region: String(process.env.AI_SUMMARY_BEDROCK_REGION || process.env.AWS_REGION || "ap-southeast-1").trim(),
+      region: String(
+        process.env.AI_SUMMARY_BEDROCK_REGION ||
+          process.env.AWS_REGION ||
+          "ap-southeast-1",
+      ).trim(),
       maxMessages: Math.min(
-        Math.max(Number.parseInt(process.env.AI_SUMMARY_MAX_MESSAGES || "120", 10), 20),
+        Math.max(
+          Number.parseInt(process.env.AI_SUMMARY_MAX_MESSAGES || "120", 10),
+          20,
+        ),
         300,
       ),
       minUnreadThreshold: Math.min(
-        Math.max(Number.parseInt(process.env.AI_SUMMARY_MIN_UNREAD || "10", 10), 1),
+        Math.max(
+          Number.parseInt(process.env.AI_SUMMARY_MIN_UNREAD || "10", 10),
+          1,
+        ),
         100,
       ),
       cacheTtlMinutes: Math.min(
-        Math.max(Number.parseInt(process.env.AI_SUMMARY_CACHE_TTL_MIN || "15", 10), 1),
+        Math.max(
+          Number.parseInt(process.env.AI_SUMMARY_CACHE_TTL_MIN || "15", 10),
+          1,
+        ),
         240,
       ),
       maxSummaryRequestsPerDay: Math.min(
-        Math.max(Number.parseInt(process.env.AI_SUMMARY_MAX_REQUESTS_PER_DAY || "80", 10), 1),
+        Math.max(
+          Number.parseInt(
+            process.env.AI_SUMMARY_MAX_REQUESTS_PER_DAY || "80",
+            10,
+          ),
+          1,
+        ),
         1000,
       ),
       maxUsdPerUserPerDay: Math.max(
-        Number.parseFloat(process.env.AI_SUMMARY_MAX_USD_PER_USER_PER_DAY || "1"),
+        Number.parseFloat(
+          process.env.AI_SUMMARY_MAX_USD_PER_USER_PER_DAY || "1",
+        ),
         0.01,
       ),
       maxInputCharsPerMessage: Math.min(
-        Math.max(Number.parseInt(process.env.AI_SUMMARY_MAX_CHARS_PER_MESSAGE || "120", 10), 80),
+        Math.max(
+          Number.parseInt(
+            process.env.AI_SUMMARY_MAX_CHARS_PER_MESSAGE || "120",
+            10,
+          ),
+          80,
+        ),
         800,
       ),
       timeoutMs: Math.min(
-        Math.max(Number.parseInt(process.env.AI_SUMMARY_TIMEOUT_MS || "8000", 10), 2000),
+        Math.max(
+          Number.parseInt(process.env.AI_SUMMARY_TIMEOUT_MS || "8000", 10),
+          2000,
+        ),
         30000,
       ),
       maxTokens: Math.min(
-        Math.max(Number.parseInt(process.env.AI_SUMMARY_MAX_OUTPUT_TOKENS || "320", 10), 80),
+        Math.max(
+          Number.parseInt(
+            process.env.AI_SUMMARY_MAX_OUTPUT_TOKENS || "320",
+            10,
+          ),
+          80,
+        ),
         1024,
       ),
       anthropicVersion: "bedrock-2023-05-31",
       estimatedInputPerMillion: Math.max(
-        Number.parseFloat(process.env.AI_SUMMARY_INPUT_PRICE_PER_MILLION || "1.0"),
+        Number.parseFloat(
+          process.env.AI_SUMMARY_INPUT_PRICE_PER_MILLION || "1.0",
+        ),
         0,
       ),
       estimatedOutputPerMillion: Math.max(
-        Number.parseFloat(process.env.AI_SUMMARY_OUTPUT_PRICE_PER_MILLION || "5.0"),
+        Number.parseFloat(
+          process.env.AI_SUMMARY_OUTPUT_PRICE_PER_MILLION || "5.0",
+        ),
         0,
       ),
       debug: this.parseBoolean(process.env.AI_SUMMARY_DEBUG, false),
@@ -102,9 +142,10 @@ class AiSummaryService {
   }
 
   formatMessageForAi(msg, maxChars) {
-    const senderName = typeof msg.senderId === "object" 
-      ? msg.senderId?.displayName || "User"
-      : "User";
+    const senderName =
+      typeof msg.senderId === "object"
+        ? msg.senderId?.displayName || "User"
+        : "User";
     const content = this.sanitizeMessageContent(msg.content, maxChars);
     return `${senderName}: ${content}`;
   }
@@ -123,7 +164,10 @@ class AiSummaryService {
     if (message.sharedPostId) return false;
     if (message.pollId) return false;
 
-    const normalizedContent = this.sanitizeMessageContent(message.content, 2000);
+    const normalizedContent = this.sanitizeMessageContent(
+      message.content,
+      2000,
+    );
     if (!normalizedContent) return false;
 
     const lowered = normalizedContent.toLowerCase();
@@ -203,7 +247,12 @@ class AiSummaryService {
     return { conversation, member };
   }
 
-  buildFingerprint({ userId, conversationId, newestUnreadMessageId, unreadCount }) {
+  buildFingerprint({
+    userId,
+    conversationId,
+    newestUnreadMessageId,
+    unreadCount,
+  }) {
     return [
       String(userId),
       String(conversationId),
@@ -294,10 +343,17 @@ class AiSummaryService {
     }
   }
 
-  async getPendingSummaryCandidates(userId, conversationId, { limit = 200 } = {}) {
+  async getPendingSummaryCandidates(
+    userId,
+    conversationId,
+    { limit = 200 } = {},
+  ) {
     await this.ensureGroupConversationMember(conversationId, userId);
 
-    const safeLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 200, 1), 500);
+    const safeLimit = Math.min(
+      Math.max(Number.parseInt(limit, 10) || 200, 1),
+      500,
+    );
     const pendingStates = await AiSummaryMessageState.find({
       userId,
       conversationId,
@@ -322,7 +378,9 @@ class AiSummaryService {
       isUnsent: { $ne: true },
       type: "text",
     })
-      .select("_id content type attachments replyToMessageId sharedPostId pollId isUnsent createdAt senderId")
+      .select(
+        "_id content type attachments replyToMessageId sharedPostId pollId isUnsent createdAt senderId",
+      )
       .populate("senderId", "displayName avatar")
       .lean();
 
@@ -384,16 +442,13 @@ class AiSummaryService {
       query.messageId = { $in: normalizedMessageIds };
     }
 
-    const updateResult = await AiSummaryMessageState.updateMany(
-      query,
-      {
-        $set: {
-          status: "summarized",
-          summarizedAt: new Date(),
-          summaryRecordId: null,
-        },
+    const updateResult = await AiSummaryMessageState.updateMany(query, {
+      $set: {
+        status: "summarized",
+        summarizedAt: new Date(),
+        summaryRecordId: null,
       },
-    );
+    });
 
     const discardedCount = Number(
       updateResult?.modifiedCount || updateResult?.nModified || 0,
@@ -503,15 +558,29 @@ class AiSummaryService {
 
   buildModelInput(messages, maxCharsPerMessage) {
     const lines = messages
-      .filter((msg) => msg && msg.content && !msg.isUnsent && msg.type !== "system" && msg.content.trim().length > 3)
+      .filter(
+        (msg) =>
+          msg &&
+          msg.content &&
+          !msg.isUnsent &&
+          msg.type !== "system" &&
+          msg.content.trim().length > 3,
+      )
       .map((msg) => {
         const senderName = msg.senderId?.displayName || "Người dùng";
-        const normalizedContent = this.sanitizeMessageContent(msg.content, maxCharsPerMessage);
+        const normalizedContent = this.sanitizeMessageContent(
+          msg.content,
+          maxCharsPerMessage,
+        );
         return `${senderName}: ${normalizedContent}`;
       })
       .filter(Boolean);
-    
-    console.log("[AiSummary] buildModelInput: prepared", lines.length, "messages (filtered noise)");
+
+    console.log(
+      "[AiSummary] buildModelInput: prepared",
+      lines.length,
+      "messages (filtered noise)",
+    );
     return lines;
   }
 
@@ -521,8 +590,10 @@ class AiSummaryService {
   }
 
   estimateCostUsd(inputTokens, outputTokens, config) {
-    const inputCost = (inputTokens / 1_000_000) * config.estimatedInputPerMillion;
-    const outputCost = (outputTokens / 1_000_000) * config.estimatedOutputPerMillion;
+    const inputCost =
+      (inputTokens / 1_000_000) * config.estimatedInputPerMillion;
+    const outputCost =
+      (outputTokens / 1_000_000) * config.estimatedOutputPerMillion;
     return Number((inputCost + outputCost).toFixed(6));
   }
 
@@ -563,7 +634,11 @@ class AiSummaryService {
 
     // Prefer cutting at sentence boundary, then at word boundary.
     const soft = value.slice(0, maxChars);
-    const sentenceCut = Math.max(soft.lastIndexOf("."), soft.lastIndexOf("!"), soft.lastIndexOf("?"));
+    const sentenceCut = Math.max(
+      soft.lastIndexOf("."),
+      soft.lastIndexOf("!"),
+      soft.lastIndexOf("?"),
+    );
     if (sentenceCut >= 120) {
       return `${soft.slice(0, sentenceCut + 1).trim()} ...`;
     }
@@ -578,42 +653,53 @@ class AiSummaryService {
 
   safeParseSummary(text, requestId = "unknown") {
     const raw = String(text || "").trim();
-    console.log(`[AiSummary][${requestId}] safeParseSummary input length: ${raw.length}`);
-    
+    console.log(
+      `[AiSummary][${requestId}] safeParseSummary input length: ${raw.length}`,
+    );
+
     // GUARDRAIL 1: Check if contains JSON
     if (!raw.includes("{")) {
-      console.warn(`[AiSummary][${requestId}] ⚠️ No JSON detected in response → skip parse, use fallback`);
+      console.warn(
+        `[AiSummary][${requestId}] ⚠️ No JSON detected in response → skip parse, use fallback`,
+      );
       return this.parseTextFallbackSummary(text);
     }
-    
+
     try {
       return this.parseJsonResponse(text);
     } catch (e) {
-      console.warn(`[AiSummary][${requestId}] parseJsonResponse failed: ${e.message}`);
-      
+      console.warn(
+        `[AiSummary][${requestId}] parseJsonResponse failed: ${e.message}`,
+      );
+
       // Attempt 1: Extract JSON from text
       const jsonMatch = text.match(/\{[^{}]*\}/);
       if (jsonMatch) {
-        console.log(`[AiSummary][${requestId}] 🔍 JSON match attempt 1 - extracted: ${jsonMatch[0].slice(0, 80)}`);
+        console.log(
+          `[AiSummary][${requestId}] 🔍 JSON match attempt 1 - extracted: ${jsonMatch[0].slice(0, 80)}`,
+        );
         try {
           const parsed = JSON.parse(jsonMatch[0]);
-          console.log(`[AiSummary][${requestId}] ✅ Repair attempt 1 SUCCESS`);
           return {
             overview: this.normalizeOverviewText(parsed?.overview),
           };
         } catch (e2) {
-          console.warn(`[AiSummary][${requestId}] Repair attempt 1 failed: ${e2.message}`);
+          console.warn(
+            `[AiSummary][${requestId}] Repair attempt 1 failed: ${e2.message}`,
+          );
         }
       }
 
       // Attempt 2: Fix common JSON errors
-      console.log(`[AiSummary][${requestId}] 🔧 Attempting repair 2: fix JSON syntax`);
+      console.log(
+        `[AiSummary][${requestId}] 🔧 Attempting repair 2: fix JSON syntax`,
+      );
       const fixedJson = text
         .replace(/'/g, '"')
         .replace(/,\s*}/g, "}")
         .replace(/,\s*]/g, "]")
         .replace(/([\w]+):/g, '"$1":');
-      
+
       try {
         const parsed = JSON.parse(fixedJson);
         console.log(`[AiSummary][${requestId}] ✅ Repair attempt 2 SUCCESS`);
@@ -621,11 +707,15 @@ class AiSummaryService {
           overview: this.normalizeOverviewText(parsed?.overview),
         };
       } catch (e3) {
-        console.warn(`[AiSummary][${requestId}] Repair attempt 2 failed: ${e3.message}`);
+        console.warn(
+          `[AiSummary][${requestId}] Repair attempt 2 failed: ${e3.message}`,
+        );
       }
 
       // Fallback: use text content
-      console.warn(`[AiSummary][${requestId}] ❌ All JSON repairs failed, using text fallback`);
+      console.warn(
+        `[AiSummary][${requestId}] ❌ All JSON repairs failed, using text fallback`,
+      );
       return this.parseTextFallbackSummary(text);
     }
   }
@@ -638,11 +728,11 @@ class AiSummaryService {
 
     const firstBrace = raw.indexOf("{");
     const lastBrace = raw.lastIndexOf("}");
-    
+
     if (firstBrace < 0 || lastBrace <= firstBrace) {
       throw new Error("No valid JSON braces found");
     }
-    
+
     const candidate = raw.slice(firstBrace, lastBrace + 1);
 
     try {
@@ -672,9 +762,11 @@ class AiSummaryService {
       code: String(error?.code || error?.Code || "UNKNOWN"),
       message: String(error?.message || "Unknown Bedrock error"),
       requestId:
-        error?.$metadata?.requestId || error?.requestId || error?.RequestId || null,
-      statusCode:
-        error?.$metadata?.httpStatusCode || error?.statusCode || null,
+        error?.$metadata?.requestId ||
+        error?.requestId ||
+        error?.RequestId ||
+        null,
+      statusCode: error?.$metadata?.httpStatusCode || error?.statusCode || null,
     };
 
     return details;
@@ -688,11 +780,17 @@ class AiSummaryService {
       return true;
     }
 
-    if (name.includes("validation") && message.includes("operation not allowed")) {
+    if (
+      name.includes("validation") &&
+      message.includes("operation not allowed")
+    ) {
       return true;
     }
 
-    if (message.includes("not authorized") || message.includes("access denied")) {
+    if (
+      message.includes("not authorized") ||
+      message.includes("access denied")
+    ) {
       return true;
     }
 
@@ -751,7 +849,9 @@ class AiSummaryService {
           responseBody?.prompt_token_count || responseBody?.prompt_tokens || 0,
         ),
         outputTokens: Number(
-          responseBody?.generation_token_count || responseBody?.completion_tokens || 0,
+          responseBody?.generation_token_count ||
+            responseBody?.completion_tokens ||
+            0,
         ),
       };
     }
@@ -795,9 +895,9 @@ class AiSummaryService {
     try {
       const retryLabel = retryCount > 0 ? ` [RETRY ${retryCount}]` : "";
       console.log(`[AiSummary][${requestId}] Calling Gemini${retryLabel}...`);
-      
+
       const startTime = Date.now();
-      
+
       const contents = [
         {
           role: "user",
@@ -823,18 +923,26 @@ class AiSummaryService {
       );
 
       const latency = Date.now() - startTime;
-      console.log(`[AiSummary][${requestId}] ✅ Gemini response received (${latency}ms), length: ${responseText?.length || 0}`);
+      console.log(
+        `[AiSummary][${requestId}] ✅ Gemini response received (${latency}ms), length: ${responseText?.length || 0}`,
+      );
 
       if (!responseText || responseText.trim().length === 0) {
-        console.error(`[AiSummary][${requestId}] ❌ Gemini returned EMPTY response`);
+        console.error(
+          `[AiSummary][${requestId}] ❌ Gemini returned EMPTY response`,
+        );
         throw new Error("Gemini empty response");
       }
 
       // Log full response if debug enabled
       if (process.env.AI_SUMMARY_DEBUG === "true") {
-        console.log(`[AiSummary][${requestId}]\n===== FULL GEMINI RESPONSE =====\n${responseText}\n=================================\n`);
+        console.log(
+          `[AiSummary][${requestId}]\n===== FULL GEMINI RESPONSE =====\n${responseText}\n=================================\n`,
+        );
       } else {
-        console.log(`[AiSummary][${requestId}] Response preview (first 200 chars): ${responseText.slice(0, 200)}`);
+        console.log(
+          `[AiSummary][${requestId}] Response preview (first 200 chars): ${responseText.slice(0, 200)}`,
+        );
       }
 
       return {
@@ -843,7 +951,9 @@ class AiSummaryService {
         outputTokens: 0,
       };
     } catch (error) {
-      console.error(`[AiSummary][${requestId}] ❌ Gemini invoke error: ${error.message || error}`);
+      console.error(
+        `[AiSummary][${requestId}] ❌ Gemini invoke error: ${error.message || error}`,
+      );
       throw error;
     }
   }
@@ -915,7 +1025,10 @@ class AiSummaryService {
   async invokeBedrock(prompt, config) {
     const client = this.getClient(config.region);
     const abortController = new AbortController();
-    const timeoutHandle = setTimeout(() => abortController.abort(), config.timeoutMs);
+    const timeoutHandle = setTimeout(
+      () => abortController.abort(),
+      config.timeoutMs,
+    );
     const payload = this.buildBedrockPayload(prompt, config);
 
     const command = new InvokeModelCommand({
@@ -930,7 +1043,9 @@ class AiSummaryService {
         abortSignal: abortController.signal,
       });
 
-      const responseBody = JSON.parse(Buffer.from(response.body).toString("utf8"));
+      const responseBody = JSON.parse(
+        Buffer.from(response.body).toString("utf8"),
+      );
       const parsed = this.parseBedrockResponse(responseBody, payload.family);
 
       if (!parsed.text) {
@@ -1003,7 +1118,11 @@ class AiSummaryService {
     );
   }
 
-  async getUnreadSummary(userId, conversationId, { maxMessages, forceRefresh, messageIds } = {}) {
+  async getUnreadSummary(
+    userId,
+    conversationId,
+    { maxMessages, forceRefresh, messageIds } = {},
+  ) {
     const config = this.getConfig();
     await this.ensureGroupConversationMember(conversationId, userId);
     const shouldForceRefresh = this.parseBoolean(forceRefresh, false);
@@ -1040,7 +1159,9 @@ class AiSummaryService {
       type: "text",
     })
       .sort({ createdAt: 1, _id: 1 })
-      .select("_id content type attachments replyToMessageId sharedPostId pollId isUnsent createdAt senderId")
+      .select(
+        "_id content type attachments replyToMessageId sharedPostId pollId isUnsent createdAt senderId",
+      )
       .populate("senderId", "displayName")
       .lean();
 
@@ -1087,14 +1208,19 @@ class AiSummaryService {
       };
     }
 
-    const newestUnreadMessageId = unreadMessages[unreadMessages.length - 1]?._id;
+    const newestUnreadMessageId =
+      unreadMessages[unreadMessages.length - 1]?._id;
     const fingerprint = this.buildFingerprint({
       userId,
       conversationId,
       newestUnreadMessageId,
       unreadCount,
     });
-    const cacheKey = this.buildCacheKey({ userId, conversationId, fingerprint });
+    const cacheKey = this.buildCacheKey({
+      userId,
+      conversationId,
+      fingerprint,
+    });
 
     if (!shouldForceRefresh) {
       const cachedSummary = await this.getCachedSummary(cacheKey);
@@ -1114,7 +1240,10 @@ class AiSummaryService {
 
     const now = new Date();
 
-    const lines = this.buildModelInput(unreadMessages, config.maxInputCharsPerMessage);
+    const lines = this.buildModelInput(
+      unreadMessages,
+      config.maxInputCharsPerMessage,
+    );
     if (lines.length === 0) {
       return {
         status: "no_eligible_messages",
@@ -1160,7 +1289,10 @@ class AiSummaryService {
       };
     }
 
-    if (Number(dailyUsage.estimatedCostUsd || 0) + finalEstimatedCost > config.maxUsdPerUserPerDay) {
+    if (
+      Number(dailyUsage.estimatedCostUsd || 0) + finalEstimatedCost >
+      config.maxUsdPerUserPerDay
+    ) {
       throw {
         statusCode: 429,
         message: "Bạn đã đạt giới hạn chi phí AI trong ngày (1 USD/user)",
@@ -1190,40 +1322,67 @@ class AiSummaryService {
     let modelUsed;
 
     try {
-      console.log(`\n[AiSummary][${requestId}] ========== START UNREAD SUMMARY REQUEST ==========`);
-      console.log(`[AiSummary][${requestId}] ConversationId: ${conversationId}, Unread: ${unreadMessages.length}`);
-      
-      console.log(`[AiSummary][${requestId}] Building prompt with ${finalLines.length} message lines`);
-      console.log(`[AiSummary][${requestId}] Sample finalLines:`, finalLines.slice(0, 2));
-      
+      console.log(
+        `\n[AiSummary][${requestId}] ========== START UNREAD SUMMARY REQUEST ==========`,
+      );
+      console.log(
+        `[AiSummary][${requestId}] ConversationId: ${conversationId}, Unread: ${unreadMessages.length}`,
+      );
+
+      console.log(
+        `[AiSummary][${requestId}] Building prompt with ${finalLines.length} message lines`,
+      );
+      console.log(
+        `[AiSummary][${requestId}] Sample finalLines:`,
+        finalLines.slice(0, 2),
+      );
+
       const prompt = this.buildPrompt(finalLines);
-      
+
       console.log(`[AiSummary][${requestId}] Prompt length: ${prompt.length}`);
-      
+
       // Log FULL prompt if debug enabled
       if (process.env.AI_SUMMARY_DEBUG === "true") {
-        console.log(`[AiSummary][${requestId}]\n===== FULL PROMPT SENT TO AI =====\n${prompt}\n====================================\n`);
+        console.log(
+          `[AiSummary][${requestId}]\n===== FULL PROMPT SENT TO AI =====\n${prompt}\n====================================\n`,
+        );
       }
-      
+
       // Use Gemini API for summary generation (Bedrock not configured)
       if (!config.modelId) {
-        console.log(`[AiSummary][${requestId}] 📤 MODEL USED: gemini-2.5-flash (Bedrock not configured)`);
-        
+        console.log(
+          `[AiSummary][${requestId}] 📤 MODEL USED: gemini-2.5-flash (Bedrock not configured)`,
+        );
+
         try {
-          summaryResult = await this.invokeGemini(prompt, {
-            maxTokens: adaptiveMode.maxTokens,
-            timeoutMs: config.timeoutMs,
-          }, requestId, 0);
+          summaryResult = await this.invokeGemini(
+            prompt,
+            {
+              maxTokens: adaptiveMode.maxTokens,
+              timeoutMs: config.timeoutMs,
+            },
+            requestId,
+            0,
+          );
           modelUsed = "gemini-2.5-flash";
         } catch (primaryError) {
-          console.warn(`[AiSummary][${requestId}] ⚠️ Primary attempt failed, retrying with reinforced prompt...`);
-          
+          console.warn(
+            `[AiSummary][${requestId}] ⚠️ Primary attempt failed, retrying with reinforced prompt...`,
+          );
+
           // RETRY 1: Reinforce prompt with explicit instruction
-          const reinforcedPrompt = prompt + "\n\n🔴 CRITICAL: You MUST return ONLY valid JSON, nothing else!";
-          summaryResult = await this.invokeGemini(reinforcedPrompt, {
-            maxTokens: adaptiveMode.maxTokens,
-            timeoutMs: config.timeoutMs,
-          }, requestId, 1);
+          const reinforcedPrompt =
+            prompt +
+            "\n\n🔴 CRITICAL: You MUST return ONLY valid JSON, nothing else!";
+          summaryResult = await this.invokeGemini(
+            reinforcedPrompt,
+            {
+              maxTokens: adaptiveMode.maxTokens,
+              timeoutMs: config.timeoutMs,
+            },
+            requestId,
+            1,
+          );
           modelUsed = "gemini-2.5-flash";
         }
       } else {
@@ -1237,14 +1396,21 @@ class AiSummaryService {
 
       const bedrockResult = summaryResult;
       let parsedSummary;
-      
+
       console.log(`[AiSummary][${requestId}] Parsing AI response...`);
-      console.log(`[AiSummary][${requestId}] Response type: ${typeof bedrockResult}`);
-      console.log(`[AiSummary][${requestId}] Response.text length: ${bedrockResult.text?.length}`);
-      
+      console.log(
+        `[AiSummary][${requestId}] Response type: ${typeof bedrockResult}`,
+      );
+      console.log(
+        `[AiSummary][${requestId}] Response.text length: ${bedrockResult.text?.length}`,
+      );
+
       parsedSummary = this.safeParseSummary(bedrockResult.text, requestId);
-      
-      console.log(`[AiSummary][${requestId}] ✅ FINAL parsedSummary:`, JSON.stringify(parsedSummary).slice(0, 150));
+
+      console.log(
+        `[AiSummary][${requestId}] ✅ FINAL parsedSummary:`,
+        JSON.stringify(parsedSummary).slice(0, 150),
+      );
 
       const record = await AiSummaryRecord.create({
         userId,
@@ -1253,14 +1419,16 @@ class AiSummaryService {
         dayKey,
         unreadCount,
         summarizedFromAt: unreadMessages[0]?.createdAt || null,
-        summarizedToAt: unreadMessages[unreadMessages.length - 1]?.createdAt || null,
+        summarizedToAt:
+          unreadMessages[unreadMessages.length - 1]?.createdAt || null,
         summarizedMessageIds: unreadMessages.map((msg) => msg._id),
         summary: parsedSummary,
         assistantName: config.assistantName,
         modelId: modelUsed,
         usage: {
           inputTokens: bedrockResult.inputTokens || finalEstimatedInputTokens,
-          outputTokens: bedrockResult.outputTokens || finalEstimatedOutputTokens,
+          outputTokens:
+            bedrockResult.outputTokens || finalEstimatedOutputTokens,
           estimatedCostUsd: finalEstimatedCost,
         },
       });
@@ -1276,7 +1444,11 @@ class AiSummaryService {
         cached: false,
       };
 
-      await this.setCachedSummary(cacheKey, summaryPayload, config.cacheTtlMinutes);
+      await this.setCachedSummary(
+        cacheKey,
+        summaryPayload,
+        config.cacheTtlMinutes,
+      );
 
       await AiSummaryMessageState.updateMany(
         {
@@ -1294,13 +1466,19 @@ class AiSummaryService {
         },
       );
 
-      console.log(`[AiSummary][${requestId}] ✅ SUCCESS - Summary saved with id: ${record._id}`);
-      console.log(`[AiSummary][${requestId}] ========== END SUMMARY (MODEL: ${modelUsed}) ==========\n`);
+      console.log(
+        `[AiSummary][${requestId}] ✅ SUCCESS - Summary saved with id: ${record._id}`,
+      );
+      console.log(
+        `[AiSummary][${requestId}] ========== END SUMMARY (MODEL: ${modelUsed}) ==========\n`,
+      );
       return summaryPayload;
     } catch (error) {
-      console.error(`[AiSummary][${requestId}] ❌ SUMMARY GENERATION FAILED: ${error?.message}`);
+      console.error(
+        `[AiSummary][${requestId}] ❌ SUMMARY GENERATION FAILED: ${error?.message}`,
+      );
       console.error(`[AiSummary][${requestId}] Stack:`, error?.stack);
-      
+
       // Rollback usage budget
       await this.rollbackDailyUsageBudget(userId, dayKey, {
         inputTokens: finalEstimatedInputTokens,
@@ -1309,9 +1487,11 @@ class AiSummaryService {
       });
 
       // Fallback: Generate basic summary without AI
-      console.log(`[AiSummary][${requestId}] 🔄 Generating fallback summary...`);
+      console.log(
+        `[AiSummary][${requestId}] 🔄 Generating fallback summary...`,
+      );
       const fallbackSummary = this.buildFallbackSummary(unreadMessages, config);
-      
+
       const fallbackRecord = await AiSummaryRecord.create({
         userId,
         conversationId,
@@ -1319,7 +1499,8 @@ class AiSummaryService {
         dayKey,
         unreadCount,
         summarizedFromAt: unreadMessages[0]?.createdAt || null,
-        summarizedToAt: unreadMessages[unreadMessages.length - 1]?.createdAt || null,
+        summarizedToAt:
+          unreadMessages[unreadMessages.length - 1]?.createdAt || null,
         summarizedMessageIds: unreadMessages.map((msg) => msg._id),
         summary: fallbackSummary,
         assistantName: config.assistantName,
@@ -1399,7 +1580,9 @@ class AiSummaryService {
       isUnsent: { $ne: true },
     })
       .sort({ createdAt: 1, _id: 1 })
-      .select("_id content type attachments replyToMessageId sharedPostId pollId isUnsent createdAt senderId")
+      .select(
+        "_id content type attachments replyToMessageId sharedPostId pollId isUnsent createdAt senderId",
+      )
       .populate("senderId", "displayName avatar")
       .lean();
 

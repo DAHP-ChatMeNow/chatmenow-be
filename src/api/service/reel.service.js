@@ -4,6 +4,7 @@ const ReelComment = require("../models/reel-comment.model");
 const Notification = require("../models/notification.model");
 const { getSignedUrlFromS3 } = require("../middleware/storage");
 const { REEL_LIMITS } = require("../../constants/reel.constants");
+const premiumService = require("./premium.service");
 
 class ReelService {
     // ─── helpers ────────────────────────────────────────────────────────────────
@@ -30,7 +31,17 @@ class ReelService {
 
     // ─── create ─────────────────────────────────────────────────────────────────
 
-    async createReel(userId, { caption = "", musicUrl = null, musicTitle = null, musicArtist = null }, s3Key) {
+    async createReel(
+        userId,
+        {
+            caption = "",
+            musicUrl = null,
+            musicTitle = null,
+            musicArtist = null,
+            videoDuration = 0,
+        },
+        s3Key,
+    ) {
         if (!s3Key) {
             throw { statusCode: 400, message: "Video URL là bắt buộc" };
         }
@@ -39,11 +50,16 @@ class ReelService {
             throw { statusCode: 400, message: "Caption quá dài" };
         }
 
+        await premiumService.enforceReelCreation(userId, {
+            videoDuration: Number(videoDuration || 0),
+        });
+
         const hashtags = this.parseHashtags(caption);
 
         const reel = await Reel.create({
             userId,
             videoUrl: s3Key,
+            duration: Number(videoDuration || 0),
             caption,
             hashtags,
             musicUrl: musicUrl || null,

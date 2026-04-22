@@ -5,6 +5,7 @@ const ReelSchema = new Schema(
     {
         userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
         videoUrl: { type: String, required: true }, // S3 key
+        duration: { type: Number, default: 0 },
         caption: { type: String, default: "" },
         hashtags: [{ type: String }],
         musicUrl: { type: String, default: null },

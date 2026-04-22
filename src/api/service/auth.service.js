@@ -605,7 +605,7 @@ class AuthService {
   async getMe(userId) {
     const user = await User.findById(userId).populate(
       "accountId",
-      "email role isPremium",
+      "email role isPremium premiumExpiryDate",
     );
     if (!user) {
       throw {
