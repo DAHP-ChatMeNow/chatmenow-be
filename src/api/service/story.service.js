@@ -3,6 +3,7 @@ const User = require("../models/user.model");
 const Notification = require("../models/notification.model");
 const { uploadToS3, getSignedUrlFromS3 } = require("../middleware/storage");
 const { STORY_PRIVACY, STORY_SETTINGS } = require("../../constants/story.constants");
+const premiumService = require("./premium.service");
 
 class StoryService {
   async appendVideoViewHistory(userId, sourceType, sourceId) {
@@ -106,13 +107,12 @@ class StoryService {
         };
       }
 
-      if (duration > STORY_SETTINGS.MAX_VIDEO_DURATION_SECONDS) {
-        throw {
-          statusCode: 400,
-          message: `Video story vượt quá ${STORY_SETTINGS.MAX_VIDEO_DURATION_SECONDS} giây`,
-        };
-      }
     }
+
+    await premiumService.enforceStoryCreation(userId, {
+      isVideo,
+      videoDuration: duration,
+    });
 
     const s3Key = await uploadToS3(file, "stories");
 

@@ -1,5 +1,6 @@
 const Account = require("../models/account.model");
 const Post = require("../models/post.model");
+const premiumService = require("./premium.service");
 
 const buildStartOfToday = () => {
   const start = new Date();
@@ -36,6 +37,16 @@ async function getAdminStats() {
   };
 }
 
+async function getPremiumConfig() {
+  return await premiumService.getOrCreatePremiumConfig();
+}
+
+async function updatePremiumConfig(payload) {
+  return await premiumService.savePremiumConfig(payload || {});
+}
+
 module.exports = {
   getAdminStats,
+  getPremiumConfig,
+  updatePremiumConfig,
 };

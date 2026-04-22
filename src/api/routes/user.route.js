@@ -34,6 +34,31 @@ router.delete(
   userController.clearProfileVisitHistory,
 );
 
+// Premium
+router.get("/premium/overview", verifyToken, userController.getPremiumOverview);
+router.get("/premium/plans", verifyToken, userController.getPremiumPlans);
+router.get(
+  "/premium/payment-template",
+  verifyToken,
+  userController.getPremiumPaymentTemplate,
+);
+router.get("/premium/history", verifyToken, userController.getPremiumHistory);
+router.post(
+  "/premium/mock-checkout",
+  verifyToken,
+  userController.createPremiumMockCheckout,
+);
+router.post(
+  "/premium/mock-checkout/:transactionId/confirm",
+  verifyToken,
+  userController.confirmPremiumMockCheckout,
+);
+router.post(
+  "/premium/vnpay/checkout",
+  verifyToken,
+  userController.createPremiumVNPayCheckout,
+);
+
 // Lấy email và SĐT của user hiện tại
 router.get("/me/email", verifyToken, userController.getUserEmail);
 
