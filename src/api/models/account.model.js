@@ -9,6 +9,7 @@ const AccountSchema = new Schema(
     role: { type: String, enum: ["user", "admin"], default: "user" },
     isPremium: { type: Boolean, default: false },
     premiumExpiryDate: { type: Date, default: null },
+    premiumPlanCode: { type: String, default: "" },
     accountStatus: {
       type: String,
       enum: ["active", "suspended", "locked"],

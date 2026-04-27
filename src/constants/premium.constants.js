@@ -6,7 +6,7 @@ const PREMIUM_TIERS = {
 };
 
 const PREMIUM_DEFAULT_CONFIG = {
-  version: 1,
+  version: 2,
   currency: "VND",
   defaultPlanCode: "premium_monthly",
   free: {
@@ -15,6 +15,10 @@ const PREMIUM_DEFAULT_CONFIG = {
       aiAssistant: false,
       advancedAiSummary: false,
       prioritySupport: false,
+      canCreatePosts: true,
+      canInteract: true,
+      canUseReels: true,
+      canUseStories: true,
     },
     limits: {
       postsPerDay: 3,
@@ -31,6 +35,10 @@ const PREMIUM_DEFAULT_CONFIG = {
       aiAssistant: true,
       advancedAiSummary: true,
       prioritySupport: true,
+      canCreatePosts: true,
+      canInteract: true,
+      canUseReels: true,
+      canUseStories: true,
     },
     limits: {
       postsPerDay: 30,
@@ -44,19 +52,67 @@ const PREMIUM_DEFAULT_CONFIG = {
   plans: [
     {
       code: "premium_monthly",
+      title: "Gói Premium 1 tháng",
       name: "Premium 1 tháng",
       description: "Phù hợp để trải nghiệm đầy đủ tính năng nâng cao.",
       price: 99000,
       durationDays: 30,
       isRecommended: true,
+      disable: false,
+      benefits: [
+        "Sử dụng AI Assistant",
+        "Tăng giới hạn đăng bài, reel và story",
+        "Ưu tiên hỗ trợ",
+      ],
+      features: {
+        aiAssistant: true,
+        advancedAiSummary: true,
+        prioritySupport: true,
+        canCreatePosts: true,
+        canInteract: true,
+        canUseReels: true,
+        canUseStories: true,
+      },
+      limits: {
+        postsPerDay: 30,
+        reelsPerDay: 20,
+        storiesPerDay: 30,
+        postVideoDurationSeconds: 900,
+        reelVideoDurationSeconds: 300,
+        storyVideoDurationSeconds: 120,
+      },
     },
     {
       code: "premium_quarterly",
+      title: "Gói Premium 3 tháng",
       name: "Premium 3 tháng",
       description: "Tiết kiệm hơn khi dùng dài hạn.",
       price: 249000,
       durationDays: 90,
       isRecommended: false,
+      disable: false,
+      benefits: [
+        "Sử dụng AI Assistant",
+        "Tăng giới hạn đăng bài, reel và story",
+        "Ưu tiên hỗ trợ",
+      ],
+      features: {
+        aiAssistant: true,
+        advancedAiSummary: true,
+        prioritySupport: true,
+        canCreatePosts: true,
+        canInteract: true,
+        canUseReels: true,
+        canUseStories: true,
+      },
+      limits: {
+        postsPerDay: 30,
+        reelsPerDay: 20,
+        storiesPerDay: 30,
+        postVideoDurationSeconds: 900,
+        reelVideoDurationSeconds: 300,
+        storyVideoDurationSeconds: 120,
+      },
     },
   ],
   paymentTemplate: {

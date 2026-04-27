@@ -42,6 +42,33 @@ class PremiumService {
     return parsed;
   }
 
+  toIsoDateString(value, fallback = null) {
+    if (!value) {
+      return fallback || new Date().toISOString();
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return fallback || new Date().toISOString();
+    }
+
+    return date.toISOString();
+  }
+
+  toBoolean(value, fallback = false) {
+    if (value === undefined || value === null) return Boolean(fallback);
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "1", "yes", "on"].includes(normalized)) return true;
+      if (["false", "0", "no", "off", ""].includes(normalized)) return false;
+    }
+    if (typeof value === "number") {
+      if (value === 1) return true;
+      if (value === 0) return false;
+    }
+    return Boolean(value);
+  }
+
   mergeObjects(base, override) {
     if (Array.isArray(base)) {
       return Array.isArray(override) ? override : base;
@@ -61,9 +88,96 @@ class PremiumService {
     return output;
   }
 
-  normalizePlan(plan, index) {
+  normalizeFeatureSet(rawFeatures = {}, fallbackFeatures = {}) {
+    const input =
+      rawFeatures && typeof rawFeatures === "object" ? rawFeatures : {};
+    const fallback =
+      fallbackFeatures && typeof fallbackFeatures === "object"
+        ? fallbackFeatures
+        : {};
+    const defaultFeatures = PREMIUM_DEFAULT_CONFIG.premium?.features || {};
+
+    return {
+      aiAssistant: this.toBoolean(
+        input.aiAssistant,
+        fallback.aiAssistant ?? defaultFeatures.aiAssistant,
+      ),
+      advancedAiSummary: this.toBoolean(
+        input.advancedAiSummary,
+        fallback.advancedAiSummary ?? defaultFeatures.advancedAiSummary,
+      ),
+      prioritySupport: this.toBoolean(
+        input.prioritySupport,
+        fallback.prioritySupport ?? defaultFeatures.prioritySupport,
+      ),
+      canCreatePosts: this.toBoolean(
+        input.canCreatePosts,
+        fallback.canCreatePosts ?? defaultFeatures.canCreatePosts,
+      ),
+      canInteract: this.toBoolean(
+        input.canInteract,
+        fallback.canInteract ?? defaultFeatures.canInteract,
+      ),
+      canUseReels: this.toBoolean(
+        input.canUseReels,
+        fallback.canUseReels ?? defaultFeatures.canUseReels,
+      ),
+      canUseStories: this.toBoolean(
+        input.canUseStories,
+        fallback.canUseStories ?? defaultFeatures.canUseStories,
+      ),
+    };
+  }
+
+  normalizeLimitSet(rawLimits = {}, fallbackLimits = {}) {
+    const input = rawLimits && typeof rawLimits === "object" ? rawLimits : {};
+    const fallback =
+      fallbackLimits && typeof fallbackLimits === "object" ? fallbackLimits : {};
+    const defaultLimits = PREMIUM_DEFAULT_CONFIG.premium?.limits || {};
+    const resolveLimit = (value, fallbackValue, defaultValue) =>
+      this.toPositiveInteger(
+        value,
+        this.toPositiveInteger(fallbackValue, defaultValue),
+      );
+
+    return {
+      postsPerDay: resolveLimit(
+        input.postsPerDay,
+        fallback.postsPerDay,
+        defaultLimits.postsPerDay || 30,
+      ),
+      reelsPerDay: resolveLimit(
+        input.reelsPerDay,
+        fallback.reelsPerDay,
+        defaultLimits.reelsPerDay || 20,
+      ),
+      storiesPerDay: resolveLimit(
+        input.storiesPerDay,
+        fallback.storiesPerDay,
+        defaultLimits.storiesPerDay || 30,
+      ),
+      postVideoDurationSeconds: resolveLimit(
+        input.postVideoDurationSeconds,
+        fallback.postVideoDurationSeconds,
+        defaultLimits.postVideoDurationSeconds || 900,
+      ),
+      reelVideoDurationSeconds: resolveLimit(
+        input.reelVideoDurationSeconds,
+        fallback.reelVideoDurationSeconds,
+        defaultLimits.reelVideoDurationSeconds || 300,
+      ),
+      storyVideoDurationSeconds: resolveLimit(
+        input.storyVideoDurationSeconds,
+        fallback.storyVideoDurationSeconds,
+        defaultLimits.storyVideoDurationSeconds || 120,
+      ),
+    };
+  }
+
+  normalizePlan(plan, index, premiumFeatures = {}, premiumLimits = {}) {
     const defaultPlan = PREMIUM_DEFAULT_CONFIG.plans[index] || {};
-    const code = String(plan?.code || defaultPlan.code || "").trim();
+    const mergedPlan = this.mergeObjects(defaultPlan, plan || {});
+    const code = String(mergedPlan?.code || "").trim();
 
     if (!code) {
       throw {
@@ -72,28 +186,73 @@ class PremiumService {
       };
     }
 
+    const title = String(
+      mergedPlan?.title || mergedPlan?.name || defaultPlan?.title || code,
+    ).trim();
+    const name = String(
+      mergedPlan?.name || mergedPlan?.title || defaultPlan?.name || code,
+    ).trim();
+    const benefits = Array.isArray(mergedPlan?.benefits)
+      ? mergedPlan.benefits
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+          .slice(0, 50)
+      : [];
+
     return {
       code,
-      name: String(plan?.name || defaultPlan.name || code).trim(),
+      createdAt: this.toIsoDateString(mergedPlan?.createdAt),
+      title: title || name || code,
+      name: name || title || code,
       description: String(
-        plan?.description || defaultPlan.description || "",
+        mergedPlan?.description || defaultPlan.description || "",
       ).trim(),
-      price: this.toPositiveNumber(plan?.price, defaultPlan.price || 99000),
+      price: this.toPositiveNumber(
+        mergedPlan?.price,
+        defaultPlan.price || 99000,
+      ),
       durationDays: this.toPositiveInteger(
-        plan?.durationDays,
+        mergedPlan?.durationDays,
         defaultPlan.durationDays || 30,
       ),
-      isRecommended: Boolean(plan?.isRecommended || false),
+      isRecommended: Boolean(mergedPlan?.isRecommended || false),
+      disable: this.toBoolean(mergedPlan?.disable, defaultPlan?.disable || false),
+      benefits,
+      features: this.normalizeFeatureSet(mergedPlan?.features, premiumFeatures),
+      limits: this.normalizeLimitSet(mergedPlan?.limits, premiumLimits),
     };
   }
 
   normalizeConfig(rawConfig = {}) {
     const merged = this.mergeObjects(PREMIUM_DEFAULT_CONFIG, rawConfig || {});
+    const freeDefault = PREMIUM_DEFAULT_CONFIG.free || {};
+    const premiumDefault = PREMIUM_DEFAULT_CONFIG.premium || {};
+    const freeFeatures = this.normalizeFeatureSet(
+      merged.free?.features,
+      freeDefault.features || {},
+    );
+    const freeLimits = this.normalizeLimitSet(
+      merged.free?.limits,
+      freeDefault.limits || {},
+    );
+    const premiumFeatures = this.normalizeFeatureSet(
+      merged.premium?.features,
+      premiumDefault.features || {},
+    );
+    const premiumLimits = this.normalizeLimitSet(
+      merged.premium?.limits,
+      premiumDefault.limits || {},
+    );
+
     const plansInput = Array.isArray(rawConfig?.plans)
       ? rawConfig.plans
       : merged.plans;
-    const plans = plansInput.map((plan, index) =>
-      this.normalizePlan(plan, index),
+    const resolvedPlansInput =
+      Array.isArray(plansInput) && plansInput.length > 0
+        ? plansInput
+        : PREMIUM_DEFAULT_CONFIG.plans;
+    const plans = resolvedPlansInput.map((plan, index) =>
+      this.normalizePlan(plan, index, premiumFeatures, premiumLimits),
     );
 
     const planCodeSet = new Set();
@@ -107,84 +266,32 @@ class PremiumService {
       planCodeSet.add(plan.code);
     });
 
+    const requestedDefaultPlanCode = String(merged.defaultPlanCode || "").trim();
+    const visiblePlans = plans.filter((plan) => !plan.disable);
+    const fallbackDefaultPlanCode = visiblePlans[0]?.code || plans[0]?.code || "";
+    const requestedDefaultPlan = plans.find(
+      (plan) => this.normalizePlanCode(plan.code) === requestedDefaultPlanCode,
+    );
     const defaultPlanCode =
-      planCodeSet.has(merged.defaultPlanCode) && merged.defaultPlanCode
-        ? merged.defaultPlanCode
-        : plans[0]?.code;
+      requestedDefaultPlan &&
+      !requestedDefaultPlan.disable &&
+      requestedDefaultPlanCode
+        ? requestedDefaultPlanCode
+        : fallbackDefaultPlanCode;
 
     return {
-      version: this.toPositiveInteger(merged.version, 1),
+      version: this.toPositiveInteger(merged.version, 2),
       currency: String(merged.currency || "VND").trim() || "VND",
       defaultPlanCode,
       free: {
         name: String(merged.free?.name || "Free").trim() || "Free",
-        features: {
-          aiAssistant: Boolean(merged.free?.features?.aiAssistant),
-          advancedAiSummary: Boolean(merged.free?.features?.advancedAiSummary),
-          prioritySupport: Boolean(merged.free?.features?.prioritySupport),
-        },
-        limits: {
-          postsPerDay: this.toPositiveInteger(
-            merged.free?.limits?.postsPerDay,
-            3,
-          ),
-          reelsPerDay: this.toPositiveInteger(
-            merged.free?.limits?.reelsPerDay,
-            1,
-          ),
-          storiesPerDay: this.toPositiveInteger(
-            merged.free?.limits?.storiesPerDay,
-            5,
-          ),
-          postVideoDurationSeconds: this.toPositiveInteger(
-            merged.free?.limits?.postVideoDurationSeconds,
-            120,
-          ),
-          reelVideoDurationSeconds: this.toPositiveInteger(
-            merged.free?.limits?.reelVideoDurationSeconds,
-            45,
-          ),
-          storyVideoDurationSeconds: this.toPositiveInteger(
-            merged.free?.limits?.storyVideoDurationSeconds,
-            30,
-          ),
-        },
+        features: freeFeatures,
+        limits: freeLimits,
       },
       premium: {
         name: String(merged.premium?.name || "Premium").trim() || "Premium",
-        features: {
-          aiAssistant: Boolean(merged.premium?.features?.aiAssistant),
-          advancedAiSummary: Boolean(
-            merged.premium?.features?.advancedAiSummary,
-          ),
-          prioritySupport: Boolean(merged.premium?.features?.prioritySupport),
-        },
-        limits: {
-          postsPerDay: this.toPositiveInteger(
-            merged.premium?.limits?.postsPerDay,
-            30,
-          ),
-          reelsPerDay: this.toPositiveInteger(
-            merged.premium?.limits?.reelsPerDay,
-            20,
-          ),
-          storiesPerDay: this.toPositiveInteger(
-            merged.premium?.limits?.storiesPerDay,
-            30,
-          ),
-          postVideoDurationSeconds: this.toPositiveInteger(
-            merged.premium?.limits?.postVideoDurationSeconds,
-            900,
-          ),
-          reelVideoDurationSeconds: this.toPositiveInteger(
-            merged.premium?.limits?.reelVideoDurationSeconds,
-            300,
-          ),
-          storyVideoDurationSeconds: this.toPositiveInteger(
-            merged.premium?.limits?.storyVideoDurationSeconds,
-            120,
-          ),
-        },
+        features: premiumFeatures,
+        limits: premiumLimits,
       },
       plans,
       paymentTemplate: {
@@ -212,26 +319,33 @@ class PremiumService {
     };
   }
 
-  buildStartOfToday() {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    return start;
+  normalizePlanCode(planCode) {
+    return String(planCode || "").trim();
   }
 
-  async getOrCreatePremiumConfig() {
-    const setting = await Setting.findOne({ key: PREMIUM_SETTING_KEY });
-    if (!setting) {
-      return this.normalizeConfig(PREMIUM_DEFAULT_CONFIG);
+  isPlanDisabled(plan = {}) {
+    return Boolean(plan?.disable);
+  }
+
+  getVisiblePlansFromConfig(config = {}) {
+    return (config?.plans || []).filter((plan) => !this.isPlanDisabled(plan));
+  }
+
+  resolvePublicDefaultPlanCode(config = {}) {
+    const visiblePlans = this.getVisiblePlansFromConfig(config);
+    const requestedDefaultPlanCode = this.normalizePlanCode(config.defaultPlanCode);
+    const requestedDefaultPlan = visiblePlans.find(
+      (plan) => this.normalizePlanCode(plan.code) === requestedDefaultPlanCode,
+    );
+
+    if (requestedDefaultPlan) {
+      return requestedDefaultPlanCode;
     }
 
-    return this.normalizeConfig(setting.value || {});
+    return this.normalizePlanCode(visiblePlans[0]?.code);
   }
 
-  async savePremiumConfig(rawConfig) {
-    const currentConfig = await this.getOrCreatePremiumConfig();
-    const mergedConfig = this.mergeObjects(currentConfig, rawConfig || {});
-    const normalizedConfig = this.normalizeConfig(mergedConfig);
-
+  async persistPremiumConfig(normalizedConfig) {
     await Setting.findOneAndUpdate(
       { key: PREMIUM_SETTING_KEY },
       {
@@ -249,6 +363,195 @@ class PremiumService {
     return normalizedConfig;
   }
 
+  buildStartOfToday() {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return start;
+  }
+
+  async getOrCreatePremiumConfig() {
+    const setting = await Setting.findOne({ key: PREMIUM_SETTING_KEY });
+    if (!setting) {
+      const normalizedConfig = this.normalizeConfig(PREMIUM_DEFAULT_CONFIG);
+      await this.persistPremiumConfig(normalizedConfig);
+      return normalizedConfig;
+    }
+
+    const rawValue =
+      setting.value && typeof setting.value === "object" ? setting.value : {};
+    const normalizedConfig = this.normalizeConfig(rawValue);
+    const rawPlans = Array.isArray(rawValue?.plans) ? rawValue.plans : [];
+    const needsBackfill = rawPlans.some(
+      (plan) =>
+        !plan?.createdAt || typeof plan?.disable === "undefined",
+    );
+
+    if (needsBackfill) {
+      await this.persistPremiumConfig(normalizedConfig);
+    }
+
+    return normalizedConfig;
+  }
+
+  async savePremiumConfig(rawConfig) {
+    const currentConfig = await this.getOrCreatePremiumConfig();
+    const mergedConfig = this.mergeObjects(currentConfig, rawConfig || {});
+    const normalizedConfig = this.normalizeConfig(mergedConfig);
+
+    await this.persistPremiumConfig(normalizedConfig);
+
+    return normalizedConfig;
+  }
+
+  async getPremiumPlansForAdmin() {
+    const config = await this.getOrCreatePremiumConfig();
+    return {
+      currency: config.currency,
+      defaultPlanCode: config.defaultPlanCode,
+      plans: config.plans || [],
+    };
+  }
+
+  async createPremiumPlan(payload = {}) {
+    const config = await this.getOrCreatePremiumConfig();
+    const plans = [
+      ...(config.plans || []),
+      {
+        ...(payload || {}),
+        createdAt: new Date().toISOString(),
+      },
+    ];
+    const normalizedConfig = this.normalizeConfig({
+      ...config,
+      plans,
+    });
+    const createdPlan = normalizedConfig.plans[normalizedConfig.plans.length - 1];
+    await this.persistPremiumConfig(normalizedConfig);
+
+    return {
+      config: normalizedConfig,
+      plan: createdPlan,
+    };
+  }
+
+  async updatePremiumPlan(planCode, payload = {}) {
+    const normalizedPlanCode = this.normalizePlanCode(planCode);
+    const config = await this.getOrCreatePremiumConfig();
+    const currentPlans = config.plans || [];
+    const planIndex = currentPlans.findIndex(
+      (plan) => this.normalizePlanCode(plan.code) === normalizedPlanCode,
+    );
+
+    if (planIndex < 0) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy gói Premium",
+      };
+    }
+
+    const existingPlan = currentPlans[planIndex];
+    const mergedPlan = this.mergeObjects(existingPlan, payload || {});
+    mergedPlan.createdAt = this.toIsoDateString(existingPlan.createdAt);
+    const updatedCode = this.normalizePlanCode(mergedPlan.code || existingPlan.code);
+    const nextPlans = [...currentPlans];
+    nextPlans[planIndex] = mergedPlan;
+    const nextDefaultPlanCode =
+      this.normalizePlanCode(config.defaultPlanCode) ===
+      this.normalizePlanCode(existingPlan.code)
+        ? updatedCode
+        : this.normalizePlanCode(config.defaultPlanCode);
+
+    const normalizedConfig = this.normalizeConfig({
+      ...config,
+      plans: nextPlans,
+      defaultPlanCode: nextDefaultPlanCode,
+    });
+    const updatedPlan =
+      normalizedConfig.plans.find(
+        (plan) => this.normalizePlanCode(plan.code) === updatedCode,
+      ) || normalizedConfig.plans[planIndex];
+
+    await this.persistPremiumConfig(normalizedConfig);
+
+    return {
+      config: normalizedConfig,
+      plan: updatedPlan,
+    };
+  }
+
+  async deletePremiumPlan(planCode) {
+    const normalizedPlanCode = this.normalizePlanCode(planCode);
+    const config = await this.getOrCreatePremiumConfig();
+    const currentPlans = config.plans || [];
+    const planIndex = currentPlans.findIndex(
+      (plan) => this.normalizePlanCode(plan.code) === normalizedPlanCode,
+    );
+
+    if (planIndex < 0) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy gói Premium",
+      };
+    }
+
+    if (currentPlans.length <= 1) {
+      throw {
+        statusCode: 400,
+        message: "Không thể xóa gói Premium cuối cùng",
+      };
+    }
+
+    const deletedPlan = currentPlans[planIndex];
+    const nextPlans = currentPlans.filter((_, index) => index !== planIndex);
+    const nextDefaultPlanCode =
+      this.normalizePlanCode(config.defaultPlanCode) ===
+      this.normalizePlanCode(deletedPlan.code)
+        ? this.normalizePlanCode(nextPlans[0]?.code)
+        : this.normalizePlanCode(config.defaultPlanCode);
+
+    const normalizedConfig = this.normalizeConfig({
+      ...config,
+      plans: nextPlans,
+      defaultPlanCode: nextDefaultPlanCode,
+    });
+    await this.persistPremiumConfig(normalizedConfig);
+
+    return {
+      config: normalizedConfig,
+      deletedPlanCode: deletedPlan.code,
+    };
+  }
+
+  async setDefaultPremiumPlan(planCode) {
+    const normalizedPlanCode = this.normalizePlanCode(planCode);
+    const config = await this.getOrCreatePremiumConfig();
+    const selectedPlan = (config.plans || []).find(
+      (plan) => this.normalizePlanCode(plan.code) === normalizedPlanCode,
+    );
+
+    if (!selectedPlan) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy gói Premium",
+      };
+    }
+
+    if (this.isPlanDisabled(selectedPlan)) {
+      throw {
+        statusCode: 400,
+        message: "Không thể đặt gói đang bị ẩn làm mặc định",
+      };
+    }
+
+    const normalizedConfig = this.normalizeConfig({
+      ...config,
+      defaultPlanCode: normalizedPlanCode,
+    });
+    await this.persistPremiumConfig(normalizedConfig);
+
+    return normalizedConfig;
+  }
+
   isPremiumStillActive(account) {
     if (!account?.isPremium) return false;
     if (!account?.premiumExpiryDate) return false;
@@ -258,6 +561,7 @@ class PremiumService {
   async resolveAccountPremiumState(account) {
     if (!account) return account;
 
+    let shouldSave = false;
     if (
       account.isPremium &&
       account.premiumExpiryDate &&
@@ -265,6 +569,14 @@ class PremiumService {
     ) {
       account.isPremium = false;
       account.premiumExpiryDate = null;
+      account.premiumPlanCode = "";
+      shouldSave = true;
+    } else if (!account.isPremium && this.normalizePlanCode(account.premiumPlanCode)) {
+      account.premiumPlanCode = "";
+      shouldSave = true;
+    }
+
+    if (shouldSave) {
       await account.save();
     }
 
@@ -283,6 +595,68 @@ class PremiumService {
     }
   }
 
+  getPlanByCodeFromConfig(config, planCode) {
+    const normalizedPlanCode = this.normalizePlanCode(planCode);
+    if (!normalizedPlanCode) return null;
+
+    return (
+      (config?.plans || []).find(
+        (plan) => this.normalizePlanCode(plan.code) === normalizedPlanCode,
+      ) || null
+    );
+  }
+
+  async resolvePlanCodeFromLatestTransaction(accountId, config) {
+    if (!accountId) return null;
+
+    const transaction = await Transaction.findOne({
+      accountId,
+      transactionType: "premium_purchase",
+      status: TRANSACTION_STATUS.SUCCESS,
+      expiresAt: { $gt: new Date() },
+    })
+      .sort({ expiresAt: -1, createdAt: -1, _id: -1 })
+      .select("planCode")
+      .lean();
+
+    const transactionPlanCode = this.normalizePlanCode(transaction?.planCode);
+    if (!transactionPlanCode) return null;
+
+    const matched = this.getPlanByCodeFromConfig(config, transactionPlanCode);
+    return matched ? transactionPlanCode : null;
+  }
+
+  async resolveActivePlanByAccount(account, config) {
+    const defaultPlan =
+      this.getPlanByCodeFromConfig(config, config?.defaultPlanCode) ||
+      config?.plans?.[0] ||
+      null;
+    const accountPlanCode = this.normalizePlanCode(account?.premiumPlanCode);
+
+    if (accountPlanCode) {
+      const planByAccount = this.getPlanByCodeFromConfig(config, accountPlanCode);
+      if (planByAccount) {
+        return planByAccount;
+      }
+    }
+
+    const latestTransactionPlanCode = await this.resolvePlanCodeFromLatestTransaction(
+      account?._id,
+      config,
+    );
+
+    if (latestTransactionPlanCode) {
+      if (account && accountPlanCode !== latestTransactionPlanCode) {
+        account.premiumPlanCode = latestTransactionPlanCode;
+        await account.save();
+      }
+
+      return this.getPlanByCodeFromConfig(config, latestTransactionPlanCode);
+    }
+
+    return defaultPlan;
+  }
+
   async getAccessContextByAccount(account) {
     const [config, resolvedAccount] = await Promise.all([
       this.getOrCreatePremiumConfig(),
@@ -291,7 +665,16 @@ class PremiumService {
 
     const isPremiumActive = this.isPremiumStillActive(resolvedAccount);
     const tier = isPremiumActive ? PREMIUM_TIERS.PREMIUM : PREMIUM_TIERS.FREE;
-    const tierConfig = config[tier] || config.free;
+    const activePlan = isPremiumActive
+      ? await this.resolveActivePlanByAccount(resolvedAccount, config)
+      : null;
+    const tierConfig = isPremiumActive
+      ? {
+          name: activePlan?.title || activePlan?.name || config?.premium?.name,
+          features: activePlan?.features || config?.premium?.features || {},
+          limits: activePlan?.limits || config?.premium?.limits || {},
+        }
+      : config[tier] || config.free;
 
     return {
       config,
@@ -302,6 +685,8 @@ class PremiumService {
       features: tierConfig?.features || {},
       limits: tierConfig?.limits || {},
       premiumExpiryDate: resolvedAccount?.premiumExpiryDate || null,
+      activePlanCode: activePlan?.code || null,
+      activePlan: activePlan || null,
     };
   }
 
@@ -373,8 +758,23 @@ class PremiumService {
     }
   }
 
+  ensureFeatureAccess(isEnabled, { message, code }) {
+    if (isEnabled) return;
+    throw {
+      statusCode: 403,
+      message,
+      code,
+    };
+  }
+
   async enforcePostCreation(userId, { videoDurations = [] } = {}) {
     const access = await this.getAccessContextByUserId(userId);
+    this.ensureFeatureAccess(access.features?.canCreatePosts, {
+      message:
+        "Gói hiện tại chưa hỗ trợ đăng bài viết. Vui lòng nâng cấp hoặc liên hệ admin.",
+      code: "PREMIUM_POST_DISABLED",
+    });
+
     const postLimit = Number(access.limits?.postsPerDay || 0);
     const currentCount = await this.countTodayDocuments(
       Post,
@@ -395,6 +795,12 @@ class PremiumService {
 
   async enforceReelCreation(userId, { videoDuration } = {}) {
     const access = await this.getAccessContextByUserId(userId);
+    this.ensureFeatureAccess(access.features?.canUseReels, {
+      message:
+        "Gói hiện tại chưa hỗ trợ đăng reel. Vui lòng nâng cấp hoặc liên hệ admin.",
+      code: "PREMIUM_REEL_DISABLED",
+    });
+
     const reelLimit = Number(access.limits?.reelsPerDay || 0);
     const currentCount = await this.countTodayDocuments(
       Reel,
@@ -423,6 +829,12 @@ class PremiumService {
 
   async enforceStoryCreation(userId, { isVideo, videoDuration } = {}) {
     const access = await this.getAccessContextByUserId(userId);
+    this.ensureFeatureAccess(access.features?.canUseStories, {
+      message:
+        "Gói hiện tại chưa hỗ trợ đăng story. Vui lòng nâng cấp hoặc liên hệ admin.",
+      code: "PREMIUM_STORY_DISABLED",
+    });
+
     const storyLimit = Number(access.limits?.storiesPerDay || 0);
     const currentCount = await this.countTodayDocuments(
       Story,
@@ -442,38 +854,64 @@ class PremiumService {
 
   async enforceAiAccess(userId) {
     const access = await this.getAccessContextByUserId(userId);
-    if (!access.features?.aiAssistant) {
-      throw {
-        statusCode: 403,
-        message:
-          "Tính năng AI chỉ dành cho gói Premium. Vui lòng nâng cấp để tiếp tục.",
-        code: "PREMIUM_AI_REQUIRED",
-      };
-    }
+    this.ensureFeatureAccess(access.features?.aiAssistant, {
+      message:
+        "Tính năng AI chỉ dành cho gói có quyền AI Assistant. Vui lòng nâng cấp để tiếp tục.",
+      code: "PREMIUM_AI_REQUIRED",
+    });
+  }
+
+  async enforceInteraction(userId) {
+    const access = await this.getAccessContextByUserId(userId);
+    this.ensureFeatureAccess(access.features?.canInteract, {
+      message:
+        "Gói hiện tại chưa hỗ trợ tương tác (like, comment, react). Vui lòng nâng cấp hoặc liên hệ admin.",
+      code: "PREMIUM_INTERACTION_DISABLED",
+    });
   }
 
   async getPlans() {
     const config = await this.getOrCreatePremiumConfig();
+    const visiblePlans = this.getVisiblePlansFromConfig(config);
     return {
       currency: config.currency,
-      defaultPlanCode: config.defaultPlanCode,
-      plans: config.plans || [],
+      defaultPlanCode: this.resolvePublicDefaultPlanCode(config),
+      plans: visiblePlans,
     };
   }
 
-  async getPlanByCode(planCode) {
+  async getPlanByCode(planCode, { includeDisabled = false } = {}) {
     const config = await this.getOrCreatePremiumConfig();
-    const selectedCode = String(
-      planCode || config.defaultPlanCode || "",
-    ).trim();
-    const plan = (config.plans || []).find(
-      (item) => item.code === selectedCode,
+    const plans = config.plans || [];
+    const normalizedRequestedCode = this.normalizePlanCode(planCode);
+    const selectedCode = this.normalizePlanCode(
+      normalizedRequestedCode ||
+        (includeDisabled
+          ? config.defaultPlanCode
+          : this.resolvePublicDefaultPlanCode(config)),
     );
+    const matchedPlan = plans.find(
+      (item) => this.normalizePlanCode(item.code) === selectedCode,
+    );
+    const plan = includeDisabled
+      ? matchedPlan || null
+      : this.isPlanDisabled(matchedPlan)
+        ? null
+        : matchedPlan || null;
+
+    if (!includeDisabled && matchedPlan && this.isPlanDisabled(matchedPlan)) {
+      throw {
+        statusCode: 403,
+        message: "Gói Premium này đang tạm ẩn và không thể đăng ký",
+      };
+    }
 
     if (!plan) {
       throw {
         statusCode: 404,
-        message: "Không tìm thấy gói Premium",
+        message: includeDisabled
+          ? "Không tìm thấy gói Premium"
+          : "Không tìm thấy gói Premium đang mở bán",
       };
     }
 
@@ -534,6 +972,7 @@ class PremiumService {
 
     account.isPremium = true;
     account.premiumExpiryDate = expiresAt;
+    account.premiumPlanCode = this.normalizePlanCode(plan.code);
     await account.save();
 
     return expiresAt;
@@ -1100,14 +1539,16 @@ class PremiumService {
         isPremium: access.isPremiumActive,
         tier: access.tier,
         tierName: access.tierName,
+        activePlanCode: access.activePlanCode,
+        activePlan: access.activePlan,
         premiumExpiryDate: access.premiumExpiryDate,
         features: access.features,
         limits: access.limits,
       },
       plans: {
         currency: access.config.currency,
-        defaultPlanCode: access.config.defaultPlanCode,
-        items: access.config.plans || [],
+        defaultPlanCode: this.resolvePublicDefaultPlanCode(access.config),
+        items: this.getVisiblePlansFromConfig(access.config),
       },
       paymentTemplate: access.config.paymentTemplate || {},
       recentTransactions: historySummary.items,
