@@ -2,6 +2,7 @@ const StoryReply = require("../models/story-reply.model");
 const Story = require("../models/story.model");
 const User = require("../models/user.model");
 const Notification = require("../models/notification.model");
+const premiumService = require("./premium.service");
 const { STORY_PRIVACY, STORY_SETTINGS } = require("../../constants/story.constants");
 
 class StoryReplyService {
@@ -51,6 +52,8 @@ class StoryReplyService {
         message: "Bạn không thể reply story của chính mình",
       };
     }
+
+    await premiumService.enforceInteraction(userId);
 
     const reply = await StoryReply.create({
       storyId,

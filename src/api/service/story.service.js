@@ -376,6 +376,15 @@ class StoryService {
     }
 
     const existingReaction = story.reactions.find((r) => r.emoji === emoji);
+    const isRemovingReaction = Boolean(
+      existingReaction?.users?.some(
+        (id) => id.toString() === userId.toString(),
+      ),
+    );
+
+    if (!isRemovingReaction) {
+      await premiumService.enforceInteraction(userId);
+    }
 
     if (existingReaction) {
       const userAlreadyReacted = existingReaction.users.some(

@@ -45,8 +45,33 @@ async function updatePremiumConfig(payload) {
   return await premiumService.savePremiumConfig(payload || {});
 }
 
+async function getPremiumPlans() {
+  return await premiumService.getPremiumPlansForAdmin();
+}
+
+async function createPremiumPlan(payload) {
+  return await premiumService.createPremiumPlan(payload || {});
+}
+
+async function updatePremiumPlan(planCode, payload) {
+  return await premiumService.updatePremiumPlan(planCode, payload || {});
+}
+
+async function deletePremiumPlan(planCode) {
+  return await premiumService.deletePremiumPlan(planCode);
+}
+
+async function setDefaultPremiumPlan(planCode) {
+  return await premiumService.setDefaultPremiumPlan(planCode);
+}
+
 module.exports = {
   getAdminStats,
   getPremiumConfig,
   updatePremiumConfig,
+  getPremiumPlans,
+  createPremiumPlan,
+  updatePremiumPlan,
+  deletePremiumPlan,
+  setDefaultPremiumPlan,
 };
