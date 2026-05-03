@@ -1,5 +1,21 @@
 const userService = require("../service/user.service");
 
+const emitConversationCreated = (io, conversationId, userIds, payload = {}) => {
+  if (!io || !conversationId) return;
+
+  const nextPayload = {
+    conversationId: String(conversationId),
+    ...payload,
+  };
+
+  io.to(String(conversationId)).emit("conversation:created", nextPayload);
+
+  for (const userId of userIds || []) {
+    if (!userId) continue;
+    io.to(String(userId)).emit("conversation:created", nextPayload);
+  }
+};
+
 exports.searchUsers = async (req, res) => {
   try {
     const { q, query, city, hometown, school, saveHistory } = req.query;
@@ -388,9 +404,34 @@ exports.respondFriendRequest = async (req, res) => {
     const { requestId } = req.params;
     const { status } = req.body;
 
-    await userService.respondFriendRequest(userId, requestId, status);
+    const result = await userService.respondFriendRequest(userId, requestId, status);
 
-    res.status(200).json({ message: `Đã ${status} lời mời` });
+    if (String(status).toLowerCase() === "accepted" && result?.conversationId) {
+      const io = req.app.get("io");
+      emitConversationCreated(io, result.conversationId, [result.senderId, userId], {
+        type: "private",
+        source: "respondFriendRequest",
+        actorId: userId,
+        friendRequestId: requestId,
+      });
+
+      io.to(String(result.senderId)).emit("friend_list_updated", {
+        newFriend: {
+          _id: userId,
+          displayName: req.user.displayName,
+          avatar: req.user.avatar,
+        },
+      });
+
+      io.to(String(userId)).emit("friend_list_updated", {
+        newFriend: result.senderInfo || { _id: result.senderId },
+      });
+    }
+
+    res.status(200).json({
+      message: `Đã ${status} lời mời`,
+      conversationId: result?.conversationId,
+    });
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ message: error.message });
@@ -443,6 +484,14 @@ exports.acceptFriendRequest = async (req, res) => {
 
     io.to(result.senderId.toString()).emit("friend_list_updated", {
       newFriend: result.receiverInfo,
+    });
+
+    emitConversationCreated(io, result.conversationId, [result.senderId, userId], {
+      type: "private",
+      source: "acceptFriendRequest",
+      actorId: userId,
+      friendRequestId: requestId,
+      friendId: result.senderId,
     });
 
     res.json({
