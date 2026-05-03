@@ -215,6 +215,30 @@ function initializeSocket(io) {
       socket.leave(String(conversationId));
     });
 
+    socket.on("typing", (data = {}) => {
+      const fromUserId = socket.data.userId || data.userId;
+      const { conversationId, displayName } = data;
+
+      if (!fromUserId || !conversationId) return;
+
+      io.to(String(conversationId)).emit("userTyping", {
+        userId: String(fromUserId),
+        displayName: displayName || "User",
+      });
+    });
+
+    socket.on("stopTyping", (data = {}) => {
+      const fromUserId = socket.data.userId || data.userId;
+      const { conversationId, displayName } = data;
+
+      if (!fromUserId || !conversationId) return;
+
+      io.to(String(conversationId)).emit("userStopTyping", {
+        userId: String(fromUserId),
+        displayName: displayName || "User",
+      });
+    });
+
     socket.on("sendMessage", async (data) => {
       try {
         const {

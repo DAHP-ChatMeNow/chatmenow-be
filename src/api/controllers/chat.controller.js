@@ -4,6 +4,62 @@ const aiSummaryService = require("../service/ai-summary.service");
 const { warmupUnreadSummary } = require("../../queues/ai-summary.queue");
 const Conversation = require("../models/conversation.model");
 
+const getConversationId = (conversation) =>
+  String(
+    conversation?._id || conversation?.id || conversation?.conversationId || "",
+  ).trim();
+
+const getConversationMemberIds = (conversation) => {
+  if (!conversation?.members) return [];
+
+  return conversation.members
+    .map((member) => {
+      const value = member?.userId;
+      if (!value) return "";
+      if (typeof value === "string") return value;
+      return String(value?._id || value?.id || value || "");
+    })
+    .filter(Boolean);
+};
+
+const emitConversationEvent = (io, conversation, eventName, extraPayload = {}) => {
+  if (!io || !conversation) return;
+
+  const conversationId = getConversationId(conversation);
+  if (!conversationId) return;
+
+  const payload = {
+    conversationId,
+    conversation,
+    ...extraPayload,
+  };
+
+  io.to(conversationId).emit(eventName, payload);
+
+  for (const memberId of getConversationMemberIds(conversation)) {
+    io.to(memberId).emit(eventName, payload);
+  }
+};
+
+const emitConversationDeletion = (io, conversation, extraPayload = {}) => {
+  if (!io || !conversation) return;
+
+  const conversationId = getConversationId(conversation);
+  if (!conversationId) return;
+
+  const payload = {
+    conversationId,
+    conversation,
+    ...extraPayload,
+  };
+
+  io.to(conversationId).emit("conversation:deleted", payload);
+
+  for (const memberId of getConversationMemberIds(conversation)) {
+    io.to(memberId).emit("conversation:deleted", payload);
+  }
+};
+
 exports.getConversations = async (req, res) => {
   try {
     try {
@@ -610,6 +666,11 @@ exports.createGroupConversation = async (req, res) => {
     const userId = req.user.userId;
     const group = await chatService.createGroupConversation(userId, req.body);
 
+    emitConversationEvent(req.app.get("io"), group, "conversation:created", {
+      actorId: userId,
+      source: "createGroupConversation",
+    });
+
     res.status(201).json({ success: true, group });
   } catch (error) {
     if (error.statusCode) {
@@ -767,6 +828,13 @@ exports.joinGroupByLink = async (req, res) => {
       io.to(String(conversationId)).emit("newMessage", result.systemMessage);
       io.to(String(conversationId)).emit("message:new", result.systemMessage);
 
+      if (result.conversation) {
+        emitConversationEvent(io, result.conversation, "conversation:updated", {
+          actorId: userId,
+          source: "joinGroupByLink",
+        });
+      }
+
       for (const memberId of result.memberIds || []) {
         io.to(String(memberId)).emit("newMessage", result.systemMessage);
         io.to(String(memberId)).emit("message:new", result.systemMessage);
@@ -800,6 +868,15 @@ exports.addMemberToGroup = async (req, res) => {
       conversationId,
       memberIds,
     );
+
+    if (result?.conversation) {
+      emitConversationEvent(req.app.get("io"), result.conversation, "conversation:updated", {
+        actorId: userId,
+        source: "addMemberToGroup",
+        requestCreated: Boolean(result?.requestCreated),
+        pendingApproval: Boolean(result?.pendingApproval),
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -839,6 +916,13 @@ exports.approveGroupMemberRequest = async (req, res) => {
         io.to(String(memberId)).emit("newMessage", result.systemMessage);
         io.to(String(memberId)).emit("message:new", result.systemMessage);
       }
+
+      if (result.conversation) {
+        emitConversationEvent(io, result.conversation, "conversation:updated", {
+          actorId: userId,
+          source: "approveGroupMemberRequest",
+        });
+      }
     }
 
     res.status(200).json({
@@ -874,6 +958,14 @@ exports.removeMemberFromGroup = async (req, res) => {
         io.to(String(remainingMemberId)).emit("newMessage", result.systemMessage);
         io.to(String(remainingMemberId)).emit("message:new", result.systemMessage);
       }
+
+      if (result.conversation) {
+        emitConversationEvent(io, result.conversation, "conversation:updated", {
+          actorId: userId,
+          source: "removeMemberFromGroup",
+          removedMemberId: memberId,
+        });
+      }
     }
 
     res.status(200).json({
@@ -904,6 +996,13 @@ exports.leaveGroup = async (req, res) => {
         io.to(String(memberId)).emit("newMessage", result.systemMessage);
         io.to(String(memberId)).emit("message:new", result.systemMessage);
       }
+
+      if (result.conversation) {
+        emitConversationEvent(io, result.conversation, "conversation:updated", {
+          actorId: userId,
+          source: "leaveGroup",
+        });
+      }
     }
 
     res.status(200).json({
@@ -930,6 +1029,11 @@ exports.updateGroupConversation = async (req, res) => {
       req.body || {},
     );
 
+    emitConversationEvent(req.app.get("io"), updated, "conversation:updated", {
+      actorId: userId,
+      source: "updateGroupConversation",
+    });
+
     res.status(200).json({
       success: true,
       conversation: updated,
@@ -954,6 +1058,12 @@ exports.transferGroupAdmin = async (req, res) => {
       targetUserId,
     );
 
+    emitConversationEvent(req.app.get("io"), updated, "conversation:updated", {
+      actorId: userId,
+      source: "transferGroupAdmin",
+      targetUserId,
+    });
+
     res.status(200).json({
       success: true,
       conversation: updated,
@@ -972,7 +1082,16 @@ exports.dissolveGroup = async (req, res) => {
     const userId = req.user.userId;
     const { conversationId } = req.params;
 
+    const conversationBeforeDelete = await Conversation.findById(conversationId)
+      .select("_id type name groupAvatar members.userId")
+      .lean();
+
     await chatService.dissolveGroup(userId, conversationId);
+
+    emitConversationDeletion(req.app.get("io"), conversationBeforeDelete, {
+      actorId: userId,
+      source: "dissolveGroup",
+    });
 
     res.status(200).json({ success: true, message: "Đã giải tán nhóm" });
   } catch (error) {

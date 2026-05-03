@@ -1655,6 +1655,19 @@ class UserService {
         targetUrl: `/users/${userId}`,
         isRead: false,
       });
+
+      const [senderInfo, receiverInfo] = await Promise.all([
+        User.findById(senderId).select("displayName avatar bio isOnline"),
+        User.findById(userId).select("displayName avatar bio isOnline"),
+      ]);
+
+      return {
+        status,
+        conversationId: String((await conversationPromise)._id),
+        senderId,
+        senderInfo,
+        receiverInfo,
+      };
     }
 
     return { status };
