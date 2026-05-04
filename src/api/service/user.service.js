@@ -1241,7 +1241,7 @@ class UserService {
     }
 
     const [sender, receiver] = await Promise.all([
-      User.findById(senderId).select("friends blockedUsers"),
+      User.findById(senderId).select("displayName avatar friends blockedUsers"),
       User.findById(receiverId).select("friends blockedUsers"),
     ]);
 
@@ -1441,7 +1441,9 @@ class UserService {
     const receiverId = users[0]._id;
 
     // Kiểm tra đã là bạn bè chưa
-    const sender = await User.findById(senderId).select("friends blockedUsers");
+    const sender = await User.findById(senderId).select(
+      "displayName avatar friends blockedUsers",
+    );
     if (sender.friends.includes(receiverId)) {
       throw {
         statusCode: 400,
@@ -1717,6 +1719,15 @@ class UserService {
     request.status = FRIEND_REQUEST_STATUS.ACCEPTED;
     await request.save();
 
+    await Notification.updateMany(
+      {
+        recipientId: userId,
+        type: "friend_request",
+        referenced: requestId,
+      },
+      { isRead: true },
+    );
+
     const senderId = request.senderId;
 
     let conversation = await Conversation.findOne({
@@ -1792,6 +1803,15 @@ class UserService {
     const senderId = request.senderId;
     request.status = FRIEND_REQUEST_STATUS.REJECTED;
     await request.save();
+
+    await Notification.updateMany(
+      {
+        recipientId: userId,
+        type: "friend_request",
+        referenced: requestId,
+      },
+      { isRead: true },
+    );
 
     return { success: true, senderId: senderId };
   }
