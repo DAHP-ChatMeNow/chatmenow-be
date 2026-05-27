@@ -106,6 +106,11 @@ router.patch(
   chatController.markConversationAsRead,
 );
 router.post(
+  "/conversations/:conversationId/accept-request",
+  verifyToken,
+  chatController.acceptMessageRequest,
+);
+router.post(
   "/conversations/:conversationId/clear",
   verifyToken,
   chatController.clearConversationHistory,

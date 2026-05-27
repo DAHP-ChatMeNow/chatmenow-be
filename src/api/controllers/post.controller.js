@@ -406,11 +406,12 @@ exports.sharePostToMyTimeline = async (req, res) => {
 
 exports.sharePostToConversation = async (req, res) => {
   try {
-    const message = await postService.sharePostToConversation(
+    const sendResult = await postService.sharePostToConversation(
       req.user.userId,
       req.params.id,
       req.body || {},
     );
+    const message = sendResult?.message || sendResult;
 
     const io = req.app.get("io");
     const conversation = await Conversation.findById(message.conversationId)
@@ -427,6 +428,10 @@ exports.sharePostToConversation = async (req, res) => {
     for (const memberId of memberIds) {
       io.to(memberId).emit("newMessage", message);
       io.to(memberId).emit("message:new", message);
+      io.to(memberId).emit("conversation:updated", {
+        conversationId: String(message.conversationId),
+        source: "sharePostToConversation",
+      });
     }
 
     res.status(201).json({

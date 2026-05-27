@@ -11,13 +11,24 @@ const {
 } = require("../../utils/realtime-notification.helper");
 const {
   CONVERSATION_TYPES,
+  CONVERSATION_REQUEST_STATUS,
   MESSAGE_TYPES,
   MEMBER_ROLES,
+  MESSAGE_RECEIVE_SETTINGS,
+  MESSAGE_REQUEST_LIMIT,
   NOTIFICATION_TYPES,
 } = require("../../constants");
 const { formatLastSeen } = require("../../utils/last-seen.helper");
 
 class ChatService {
+  normalizeMessageReceiveSetting(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (Object.values(MESSAGE_RECEIVE_SETTINGS).includes(normalized)) {
+      return normalized;
+    }
+    return MESSAGE_RECEIVE_SETTINGS.ALL;
+  }
+
   extractMemberUserId(member) {
     const rawUserId = member?.userId;
     if (!rawUserId) return null;
@@ -36,6 +47,122 @@ class ChatService {
     });
 
     return partnerMember ? this.extractMemberUserId(partnerMember) : null;
+  }
+
+  buildAcceptedPrivateRequestState() {
+    return {
+      requestStatus: CONVERSATION_REQUEST_STATUS.ACCEPTED,
+      requestInitiatorId: null,
+      requestRecipientId: null,
+      pendingMessageCount: 0,
+      requestAcceptedByRecipient: false,
+    };
+  }
+
+  buildPendingPrivateRequestState(initiatorId, recipientId, pendingMessageCount = 0) {
+    return {
+      requestStatus: CONVERSATION_REQUEST_STATUS.PENDING,
+      requestInitiatorId: initiatorId || null,
+      requestRecipientId: recipientId || null,
+      pendingMessageCount: Math.max(Number(pendingMessageCount || 0), 0),
+    };
+  }
+
+  shouldUsePendingPrivateRequest(recipient, initiatorId) {
+    if (!recipient?._id || !initiatorId) {
+      return false;
+    }
+
+    const recipientSetting = this.normalizeMessageReceiveSetting(
+      recipient.messageReceiveSetting,
+    );
+    const isFriend = (recipient.friends || []).some(
+      (friendId) => String(friendId) === String(initiatorId),
+    );
+    const isRestricted = (recipient.restrictedUsers || []).some(
+      (restrictedUserId) => String(restrictedUserId) === String(initiatorId),
+    );
+
+    if (isRestricted) {
+      return true;
+    }
+
+    if (recipientSetting === MESSAGE_RECEIVE_SETTINGS.NONE) {
+      return true;
+    }
+
+    if (recipientSetting === MESSAGE_RECEIVE_SETTINGS.FRIENDS && !isFriend) {
+      return true;
+    }
+
+    return false;
+  }
+
+  async resolvePrivateConversationRequestStateForPair(initiatorId, recipientId) {
+    const recipient = await User.findById(recipientId)
+      .select("_id friends restrictedUsers messageReceiveSetting")
+      .lean();
+
+    if (!recipient) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    if (this.shouldUsePendingPrivateRequest(recipient, initiatorId)) {
+      return this.buildPendingPrivateRequestState(initiatorId, recipientId);
+    }
+
+    return this.buildAcceptedPrivateRequestState();
+  }
+
+  buildViewerRequestMeta(conversation, userId) {
+    const requestStatus =
+      String(conversation?.requestStatus || "").trim() ||
+      CONVERSATION_REQUEST_STATUS.ACCEPTED;
+    const requestInitiatorId = conversation?.requestInitiatorId
+      ? String(conversation.requestInitiatorId)
+      : "";
+    const requestRecipientId = conversation?.requestRecipientId
+      ? String(conversation.requestRecipientId)
+      : "";
+    const pendingMessageCount = Math.max(
+      Number(conversation?.pendingMessageCount || 0),
+      0,
+    );
+    const requestAcceptedByRecipient = Boolean(
+      conversation?.requestAcceptedByRecipient,
+    );
+    const isPending =
+      conversation?.type === CONVERSATION_TYPES.PRIVATE &&
+      requestStatus === CONVERSATION_REQUEST_STATUS.PENDING &&
+      !!requestInitiatorId &&
+      !!requestRecipientId;
+    const isPendingRecipient =
+      isPending && String(requestRecipientId) === String(userId);
+    const isPendingInitiator =
+      isPending && String(requestInitiatorId) === String(userId);
+    const remainingMessageQuota = isPendingInitiator
+      ? Math.max(MESSAGE_REQUEST_LIMIT - pendingMessageCount, 0)
+      : null;
+
+    return {
+      requestStatus,
+      requestInitiatorId: requestInitiatorId || null,
+      requestRecipientId: requestRecipientId || null,
+      pendingMessageCount,
+      requestAcceptedByRecipient,
+      isMessageRequestPending: isPending,
+      isMessageRequestSentByViewer: isPendingInitiator,
+      canCurrentUserSend: isPendingRecipient
+        ? true
+        : isPendingInitiator
+          ? remainingMessageQuota > 0
+          : true,
+      remainingMessageQuota,
+      listCategory: isPendingRecipient ? "pending" : "inbox",
+    };
   }
 
   extractMessageSenderId(message) {
@@ -299,6 +426,120 @@ class ChatService {
     });
 
     return map;
+  }
+
+  async syncPrivateConversationRequestState(conversation) {
+    if (
+      !conversation ||
+      conversation.type !== CONVERSATION_TYPES.PRIVATE ||
+      String(conversation.requestStatus || "") !==
+        CONVERSATION_REQUEST_STATUS.PENDING
+    ) {
+      return conversation;
+    }
+
+    const initiatorId = conversation.requestInitiatorId
+      ? String(conversation.requestInitiatorId)
+      : "";
+    const recipientId = conversation.requestRecipientId
+      ? String(conversation.requestRecipientId)
+      : "";
+
+    if (!initiatorId || !recipientId) {
+      const updatedConversation = await Conversation.findByIdAndUpdate(
+        conversation._id,
+        this.buildAcceptedPrivateRequestState(),
+        { new: true },
+      )
+        .populate("members.userId", "displayName avatar isOnline lastSeen")
+        .populate("lastMessage.senderId", "displayName avatar");
+
+      return updatedConversation || conversation;
+    }
+
+    const nextState = await this.resolvePrivateConversationRequestStateForPair(
+      initiatorId,
+      recipientId,
+    );
+
+    if (nextState.requestStatus === CONVERSATION_REQUEST_STATUS.PENDING) {
+      return conversation;
+    }
+
+    const updatedConversation = await Conversation.findByIdAndUpdate(
+      conversation._id,
+      nextState,
+      { new: true },
+    )
+      .populate("members.userId", "displayName avatar isOnline lastSeen")
+      .populate("lastMessage.senderId", "displayName avatar");
+
+    return updatedConversation || conversation;
+  }
+
+  async acceptPendingPrivateConversation(conversationId, updateOverrides = {}) {
+    return Conversation.findByIdAndUpdate(
+      conversationId,
+      {
+        ...this.buildAcceptedPrivateRequestState(),
+        ...updateOverrides,
+      },
+      { new: true },
+    )
+      .populate("members.userId", "displayName avatar isOnline lastSeen")
+      .populate("lastMessage.senderId", "displayName avatar");
+  }
+
+  async acceptMessageRequest(userId, conversationId) {
+    const conversation = await this.ensureConversationMember(conversationId, userId);
+
+    if (conversation.type !== CONVERSATION_TYPES.PRIVATE) {
+      throw {
+        statusCode: 400,
+        message: "Chỉ có thể chấp nhận yêu cầu ở cuộc trò chuyện riêng tư",
+      };
+    }
+
+    const requestRecipientId = conversation.requestRecipientId
+      ? String(conversation.requestRecipientId)
+      : "";
+    const partnerId = this.getPrivatePartnerId(conversation, userId);
+
+    if (!partnerId) {
+      throw {
+        statusCode: 400,
+        message: "Không tìm thấy đối tác trò chuyện",
+      };
+    }
+
+    if (
+      String(conversation.requestStatus || "") !==
+        CONVERSATION_REQUEST_STATUS.PENDING ||
+      requestRecipientId !== String(userId)
+    ) {
+      throw {
+        statusCode: 400,
+        message: "Cuộc trò chuyện này không còn ở danh sách chờ của bạn",
+      };
+    }
+
+    await User.findByIdAndUpdate(userId, {
+      $pull: { restrictedUsers: partnerId },
+    });
+
+    const acceptedConversation = await this.acceptPendingPrivateConversation(
+      conversationId,
+      { requestAcceptedByRecipient: true },
+    );
+
+    if (!acceptedConversation) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy cuộc trò chuyện",
+      };
+    }
+
+    return this.decorateConversationWithUnreadCount(acceptedConversation, userId);
   }
 
   getMessagePreviewContent(message) {
@@ -788,7 +1029,7 @@ class ChatService {
   async ensureConversationMember(conversationId, userId) {
     const conversation = await Conversation.findById(conversationId)
       .select(
-        "_id type pinManagementEnabled pinnedMessages members.userId members.role members.lastReadAt memberSettings.userId memberSettings.lastClearedAt",
+        "_id type pinManagementEnabled pinnedMessages members.userId members.role members.lastReadAt memberSettings.userId memberSettings.lastClearedAt requestStatus requestInitiatorId requestRecipientId pendingMessageCount requestAcceptedByRecipient",
       )
       .lean();
 
@@ -924,10 +1165,13 @@ class ChatService {
       }
     }
 
+    const requestMeta = this.buildViewerRequestMeta(plainConversation, userId);
+
     return {
       ...plainConversation,
       unreadCount,
       lastMessage,
+      ...requestMeta,
     };
   }
 
@@ -1057,13 +1301,19 @@ class ChatService {
       .populate("members.userId", "displayName avatar isOnline lastSeen")
       .populate("lastMessage.senderId", "displayName avatar");
 
+    const syncedConversations = await Promise.all(
+      conversations.map((conversation) =>
+        this.syncPrivateConversationRequestState(conversation),
+      ),
+    );
+
     const aiBotUsers = await User.find({ isAiBot: true }).select("_id").lean();
     const aiBotIdSet = new Set(aiBotUsers.map((user) => String(user._id)));
 
     const dedupedConversations = [];
     let hasIncludedAiConversation = false;
 
-    for (const conversation of conversations) {
+    for (const conversation of syncedConversations) {
       const isPrivate = conversation?.type === CONVERSATION_TYPES.PRIVATE;
       const memberIds = (conversation?.members || [])
         .map((member) => this.extractMemberUserId(member))
@@ -1417,7 +1667,7 @@ class ChatService {
       mentionAll = false,
     },
   ) {
-    const conversation = await this.ensureConversationMember(
+    let conversation = await this.ensureConversationMember(
       conversationId,
       senderId,
     );
@@ -1435,6 +1685,85 @@ class ChatService {
             ? "Bạn đã chặn người này. Hãy mở chặn để tiếp tục trò chuyện"
             : "Bạn không thể nhắn tin vì người này đã chặn bạn",
         };
+      }
+
+      const requestStatus = String(conversation.requestStatus || "").trim();
+      const requestInitiatorId = conversation.requestInitiatorId
+        ? String(conversation.requestInitiatorId)
+        : "";
+      const requestRecipientId = conversation.requestRecipientId
+        ? String(conversation.requestRecipientId)
+        : "";
+      const requestAcceptedByRecipient = Boolean(
+        conversation.requestAcceptedByRecipient,
+      );
+
+      if (requestStatus === CONVERSATION_REQUEST_STATUS.PENDING) {
+        if (requestRecipientId && String(senderId) === requestRecipientId) {
+          const acceptedConversation = await this.acceptPendingPrivateConversation(
+            conversationId,
+            { requestAcceptedByRecipient: true },
+          );
+          conversation =
+            acceptedConversation ||
+            ({
+              ...conversation,
+              ...this.buildAcceptedPrivateRequestState(),
+            });
+        } else if (requestInitiatorId && String(senderId) === requestInitiatorId) {
+          const pendingMessageCount = Math.max(
+            Number(conversation.pendingMessageCount || 0),
+            0,
+          );
+
+          if (pendingMessageCount >= MESSAGE_REQUEST_LIMIT) {
+            throw {
+              statusCode: 403,
+              message:
+                "Bạn chỉ có thể gửi tối đa 3 tin nhắn khi cuộc trò chuyện còn ở danh sách chờ",
+            };
+          }
+        }
+      } else {
+        const partnerId = this.getPrivatePartnerId(conversation, senderId);
+
+        if (partnerId) {
+          const partner = await User.findById(partnerId)
+            .select("_id restrictedUsers")
+            .lean();
+          const nextRequestState =
+            await this.resolvePrivateConversationRequestStateForPair(
+              senderId,
+              partnerId,
+            );
+          const isRestrictedByPartner = (partner?.restrictedUsers || []).some(
+            (restrictedUserId) => String(restrictedUserId) === String(senderId),
+          );
+
+          if (
+            nextRequestState.requestStatus ===
+              CONVERSATION_REQUEST_STATUS.PENDING &&
+            (!requestAcceptedByRecipient || isRestrictedByPartner)
+          ) {
+            const pendingConversation = await Conversation.findByIdAndUpdate(
+              conversationId,
+              {
+                ...nextRequestState,
+                requestAcceptedByRecipient: false,
+              },
+              { new: true },
+            )
+              .populate("members.userId", "displayName avatar isOnline lastSeen")
+              .populate("lastMessage.senderId", "displayName avatar");
+
+            conversation =
+              pendingConversation ||
+              ({
+                ...conversation,
+                ...nextRequestState,
+              });
+          }
+        }
       }
     }
 
@@ -1534,7 +1863,7 @@ class ChatService {
       mentionedUserIds: mentionMeta.mentionedUserIds,
     });
 
-    await Conversation.findByIdAndUpdate(conversationId, {
+    const nextConversationUpdate = {
       lastMessage: {
         content: this.getMessagePreviewContent(message),
         senderId,
@@ -1543,9 +1872,32 @@ class ChatService {
         createdAt: message.createdAt,
       },
       updatedAt: new Date(),
-    });
+    };
 
-    return await this.decorateMessageWithSharedPost(message, senderId);
+    if (
+      conversation.type === CONVERSATION_TYPES.PRIVATE &&
+      String(conversation.requestStatus || "") ===
+        CONVERSATION_REQUEST_STATUS.PENDING &&
+      String(conversation.requestInitiatorId || "") === String(senderId)
+    ) {
+      nextConversationUpdate.pendingMessageCount = Math.max(
+        Number(conversation.pendingMessageCount || 0) + 1,
+        1,
+      );
+    }
+
+    const updatedConversation = await Conversation.findByIdAndUpdate(
+      conversationId,
+      nextConversationUpdate,
+      { new: true },
+    )
+      .populate("members.userId", "displayName avatar isOnline lastSeen")
+      .populate("lastMessage.senderId", "displayName avatar");
+
+    return {
+      message: await this.decorateMessageWithSharedPost(message, senderId),
+      conversation: updatedConversation || conversation,
+    };
   }
 
   async unsendMessage(userId, messageId) {
@@ -2075,7 +2427,7 @@ class ChatService {
    * Lấy chi tiết conversation
    */
   async getConversationDetails(conversationId, userId) {
-    const conv = await Conversation.findById(conversationId).populate(
+    let conv = await Conversation.findById(conversationId).populate(
       "members.userId",
       "displayName avatar isOnline",
     );
@@ -2097,6 +2449,8 @@ class ChatService {
         message: "Bạn chưa tham gia nhóm này",
       };
     }
+
+    conv = await this.syncPrivateConversationRequestState(conv);
 
     const decorated = await this.decorateConversationWithUnreadCount(
       conv,
@@ -2300,24 +2654,82 @@ class ChatService {
    * Lấy hoặc tạo conversation riêng tư
    */
   async getOrCreatePrivateConversation(userId, partnerId) {
+    if (!partnerId || !mongoose.Types.ObjectId.isValid(String(partnerId))) {
+      throw {
+        statusCode: 400,
+        message: "Người nhận không hợp lệ",
+      };
+    }
+
+    if (String(userId) === String(partnerId)) {
+      throw {
+        statusCode: 400,
+        message: "Không thể tạo cuộc trò chuyện với chính mình",
+      };
+    }
+
+    const [currentUser, partner] = await Promise.all([
+      User.findById(userId).select("blockedUsers").lean(),
+      User.findById(partnerId).select("_id blockedUsers").lean(),
+    ]);
+
+    if (!currentUser || !partner) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    const blockedByMe = (currentUser.blockedUsers || []).some(
+      (id) => String(id) === String(partnerId),
+    );
+    const blockedByOther = (partner.blockedUsers || []).some(
+      (id) => String(id) === String(userId),
+    );
+
+    if (blockedByMe || blockedByOther) {
+      throw {
+        statusCode: 403,
+        message: blockedByMe
+          ? "Bạn đã chặn người này. Hãy mở chặn để tiếp tục trò chuyện"
+          : "Bạn không thể nhắn tin vì người này đã chặn bạn",
+      };
+    }
+
     let conversation = await Conversation.findOne({
       type: CONVERSATION_TYPES.PRIVATE,
       $and: [
         { members: { $elemMatch: { userId } } },
         { members: { $elemMatch: { userId: partnerId } } },
       ],
-    }).select("_id type members lastMessage updatedAt");
+    })
+      .select(
+        "_id type members lastMessage updatedAt requestStatus requestInitiatorId requestRecipientId pendingMessageCount requestAcceptedByRecipient",
+      )
+      .populate("members.userId", "displayName avatar isOnline lastSeen")
+      .populate("lastMessage.senderId", "displayName avatar");
+    const existed = Boolean(conversation);
 
     if (!conversation) {
+      const requestState = await this.resolvePrivateConversationRequestStateForPair(
+        userId,
+        partnerId,
+      );
       conversation = await Conversation.create({
         type: CONVERSATION_TYPES.PRIVATE,
         members: [{ userId }, { userId: partnerId }],
+        ...requestState,
       });
+      conversation = await Conversation.findById(conversation._id)
+        .populate("members.userId", "displayName avatar isOnline lastSeen")
+        .populate("lastMessage.senderId", "displayName avatar");
+    } else {
+      conversation = await this.syncPrivateConversationRequestState(conversation);
     }
 
     return {
       conversation,
-      isNew: !conversation._id,
+      isNew: !existed,
     };
   }
 

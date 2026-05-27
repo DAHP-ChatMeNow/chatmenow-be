@@ -1,5 +1,8 @@
 const mongoose = require("mongoose");
 const Schema = mongoose.Schema;
+const {
+  MESSAGE_RECEIVE_SETTINGS,
+} = require("../../constants/user-message.constants");
 
 const UserSchema = new Schema(
   {
@@ -18,6 +21,11 @@ const UserSchema = new Schema(
 
     language: { type: String, default: "vi" },
     themeColor: { type: String, default: "light" },
+    messageReceiveSetting: {
+      type: String,
+      enum: Object.values(MESSAGE_RECEIVE_SETTINGS),
+      default: MESSAGE_RECEIVE_SETTINGS.ALL,
+    },
 
     hometown: { type: String, default: "" },
     phoneNumber: { type: String, default: "" },
@@ -31,6 +39,7 @@ const UserSchema = new Schema(
 
     friends: [{ type: Schema.Types.ObjectId, ref: "User" }],
     blockedUsers: [{ type: Schema.Types.ObjectId, ref: "User" }],
+    restrictedUsers: [{ type: Schema.Types.ObjectId, ref: "User" }],
     isAiBot: { type: Boolean, default: false },
     searchHistory: [
       {
