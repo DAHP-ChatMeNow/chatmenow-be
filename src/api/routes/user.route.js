@@ -65,11 +65,20 @@ router.get("/me/email", verifyToken, userController.getUserEmail);
 // Lấy danh sách người dùng đã chặn
 router.get("/blocked", verifyToken, userController.getBlockedUsers);
 
+// Lấy danh sách người dùng bị hạn chế
+router.get("/restricted", verifyToken, userController.getRestrictedUsers);
+
 // Chặn một người dùng
 router.post("/:userId/block", verifyToken, userController.blockUser);
 
 // Mở chặn một người dùng
 router.delete("/blocked/:userId", verifyToken, userController.unblockUser);
+
+// Thêm vào danh sách hạn chế
+router.post("/:userId/restrict", verifyToken, userController.restrictUser);
+
+// Bỏ hạn chế một người dùng
+router.delete("/restricted/:userId", verifyToken, userController.unrestrictUser);
 
 // Lấy profile của user hiện tại
 router.get("/profile", verifyToken, (req, res) => {

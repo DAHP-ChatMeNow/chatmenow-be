@@ -14,10 +14,22 @@ const {
 } = require("../../utils/realtime-notification.helper");
 const {
   CONVERSATION_TYPES,
+  CONVERSATION_REQUEST_STATUS,
   FRIEND_REQUEST_STATUS,
 } = require("../../constants");
+const {
+  MESSAGE_RECEIVE_SETTINGS,
+} = require("../../constants/user-message.constants");
 
 class UserService {
+  normalizeMessageReceiveSetting(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (Object.values(MESSAGE_RECEIVE_SETTINGS).includes(normalized)) {
+      return normalized;
+    }
+    return MESSAGE_RECEIVE_SETTINGS.ALL;
+  }
+
   normalizeString(value) {
     return String(value || "").trim();
   }
@@ -390,6 +402,8 @@ class UserService {
       gender: user.gender,
       school: user.school,
       maritalStatus: user.maritalStatus,
+      messageReceiveSetting:
+        user.messageReceiveSetting || MESSAGE_RECEIVE_SETTINGS.ALL,
       friends: user.friends,
       createdAt: user.createdAt,
     };
@@ -1004,10 +1018,149 @@ class UserService {
     };
   }
 
+  async syncPrivateConversationReceiveSetting(user) {
+    if (!user?._id) return [];
+
+    const normalizedSetting = this.normalizeMessageReceiveSetting(
+      user.messageReceiveSetting,
+    );
+    const friendIdSet = new Set((user.friends || []).map((id) => String(id)));
+    const restrictedIdSet = new Set(
+      (user.restrictedUsers || []).map((id) => String(id)),
+    );
+
+    const privateConversations = await Conversation.find({
+      type: CONVERSATION_TYPES.PRIVATE,
+      "members.userId": user._id,
+    })
+      .select(
+        "_id members.userId requestStatus requestInitiatorId requestRecipientId pendingMessageCount requestAcceptedByRecipient",
+      )
+      .lean();
+
+    if (privateConversations.length === 0) {
+      return [];
+    }
+
+    const partnerIds = privateConversations
+      .map((conversation) =>
+        (conversation.members || []).find(
+          (member) => String(member?.userId) !== String(user._id),
+        )?.userId,
+      )
+      .filter(Boolean);
+
+    const aiBotUsers = await User.find({
+      _id: { $in: partnerIds },
+      isAiBot: true,
+    })
+      .select("_id")
+      .lean();
+    const aiBotIdSet = new Set(aiBotUsers.map((item) => String(item._id)));
+
+    const bulkOps = [];
+    const updatedConversationIds = [];
+
+    for (const conversation of privateConversations) {
+      const partnerId = (conversation.members || []).find(
+        (member) => String(member?.userId) !== String(user._id),
+      )?.userId;
+
+      if (!partnerId) {
+        continue;
+      }
+
+      const normalizedPartnerId = String(partnerId);
+      if (aiBotIdSet.has(normalizedPartnerId)) {
+        continue;
+      }
+
+      const isFriend = friendIdSet.has(normalizedPartnerId);
+      const isRestricted = restrictedIdSet.has(normalizedPartnerId);
+      const shouldBePending =
+        isRestricted ||
+        normalizedSetting === MESSAGE_RECEIVE_SETTINGS.NONE ||
+        (normalizedSetting === MESSAGE_RECEIVE_SETTINGS.FRIENDS && !isFriend);
+
+      if (shouldBePending) {
+        const isManuallyAccepted =
+          Boolean(conversation.requestAcceptedByRecipient) && !isRestricted;
+
+        if (isManuallyAccepted) {
+          continue;
+        }
+
+        const shouldPreservePendingCount =
+          String(conversation.requestRecipientId || "") === String(user._id) &&
+          String(conversation.requestInitiatorId || "") === normalizedPartnerId;
+
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: conversation._id },
+            update: {
+              $set: {
+                requestStatus: CONVERSATION_REQUEST_STATUS.PENDING,
+                requestInitiatorId: partnerId,
+                requestRecipientId: user._id,
+                pendingMessageCount: shouldPreservePendingCount
+                  ? Math.max(Number(conversation.pendingMessageCount || 0), 0)
+                  : 0,
+                requestAcceptedByRecipient: false,
+              },
+            },
+          },
+        });
+        updatedConversationIds.push(String(conversation._id));
+        continue;
+      }
+
+      if (
+        String(conversation.requestStatus || "") !==
+          CONVERSATION_REQUEST_STATUS.ACCEPTED ||
+        conversation.requestInitiatorId ||
+        conversation.requestRecipientId ||
+        Number(conversation.pendingMessageCount || 0) !== 0
+      ) {
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: conversation._id },
+            update: {
+              $set: {
+                requestStatus: CONVERSATION_REQUEST_STATUS.ACCEPTED,
+                requestInitiatorId: null,
+                requestRecipientId: null,
+                pendingMessageCount: 0,
+                requestAcceptedByRecipient: false,
+              },
+            },
+          },
+        });
+        updatedConversationIds.push(String(conversation._id));
+      }
+    }
+
+    if (bulkOps.length > 0) {
+      await Conversation.bulkWrite(bulkOps);
+    }
+
+    return updatedConversationIds;
+  }
+
   /**
    * Cập nhật profile
    */
-  async updateProfile(userId, { displayName, bio, language, themeColor, hometown, phoneNumber, gender, school, maritalStatus }) {
+  async updateProfile(userId, {
+    displayName,
+    bio,
+    language,
+    themeColor,
+    hometown,
+    phoneNumber,
+    gender,
+    school,
+    maritalStatus,
+    messageReceiveSetting,
+  }) {
     if (displayName && displayName.trim().length < 2) {
       throw {
         statusCode: 400,
@@ -1025,6 +1178,26 @@ class UserService {
     if (gender !== undefined) updateData.gender = gender;
     if (school !== undefined) updateData.school = school;
     if (maritalStatus !== undefined) updateData.maritalStatus = maritalStatus;
+    if (messageReceiveSetting !== undefined) {
+      const normalizedMessageReceiveSetting = String(
+        messageReceiveSetting || "",
+      )
+        .trim()
+        .toLowerCase();
+
+      if (
+        !Object.values(MESSAGE_RECEIVE_SETTINGS).includes(
+          normalizedMessageReceiveSetting,
+        )
+      ) {
+        throw {
+          statusCode: 400,
+          message: "Cấu hình quyền nhận tin nhắn không hợp lệ",
+        };
+      }
+
+      updateData.messageReceiveSetting = normalizedMessageReceiveSetting;
+    }
 
     const updatedUser = await User.findByIdAndUpdate(userId, updateData, {
       new: true,
@@ -1037,6 +1210,13 @@ class UserService {
         message: "Không tìm thấy người dùng",
       };
     }
+
+    const syncedConversationIds =
+      messageReceiveSetting !== undefined
+        ? await this.syncPrivateConversationReceiveSetting(updatedUser)
+        : [];
+
+    updatedUser._syncedConversationIds = syncedConversationIds;
 
     return updatedUser;
   }
@@ -1177,6 +1357,36 @@ class UserService {
     };
   }
 
+  async getRestrictedUsers(userId) {
+    const user = await User.findById(userId).populate(
+      "restrictedUsers",
+      "displayName avatar bio isOnline lastSeen",
+    );
+
+    if (!user) {
+      throw {
+        statusCode: 404,
+        message: "Không tìm thấy người dùng",
+      };
+    }
+
+    return {
+      restrictedUsers: (user.restrictedUsers || []).map((restrictedUser) => ({
+        _id: restrictedUser._id,
+        displayName: restrictedUser.displayName,
+        avatar: restrictedUser.avatar,
+        bio: restrictedUser.bio,
+        isOnline: restrictedUser.isOnline,
+        lastSeen: restrictedUser.lastSeen,
+        lastSeenText: formatLastSeen(
+          restrictedUser.lastSeen,
+          restrictedUser.isOnline,
+        ),
+      })),
+      total: (user.restrictedUsers || []).length,
+    };
+  }
+
   async blockUser(userId, blockedUserId) {
     if (userId === blockedUserId) {
       throw {
@@ -1197,6 +1407,7 @@ class UserService {
 
     await User.findByIdAndUpdate(userId, {
       $addToSet: { blockedUsers: blockedUserId },
+      $pull: { restrictedUsers: blockedUserId },
     });
 
     return {
@@ -1225,6 +1436,69 @@ class UserService {
         $addToSet: { friends: userId },
       }),
     ]);
+
+    return { success: true };
+  }
+
+  async restrictUser(userId, restrictedUserId) {
+    if (userId === restrictedUserId) {
+      throw {
+        statusCode: 400,
+        message: "Không thể hạn chế chính mình",
+      };
+    }
+
+    const restrictedUser = await User.findById(restrictedUserId).select(
+      "displayName avatar",
+    );
+    if (!restrictedUser) {
+      throw {
+        statusCode: 404,
+        message: "Người dùng không tồn tại",
+      };
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        $addToSet: { restrictedUsers: restrictedUserId },
+        $pull: { blockedUsers: restrictedUserId },
+      },
+      { new: true },
+    ).select("friends restrictedUsers messageReceiveSetting");
+
+    if (updatedUser) {
+      await this.syncPrivateConversationReceiveSetting(updatedUser);
+    }
+
+    return {
+      restrictedUser: {
+        _id: restrictedUser._id,
+        displayName: restrictedUser.displayName,
+        avatar: restrictedUser.avatar,
+      },
+    };
+  }
+
+  async unrestrictUser(userId, restrictedUserId) {
+    if (userId === restrictedUserId) {
+      throw {
+        statusCode: 400,
+        message: "Không thể bỏ hạn chế chính mình",
+      };
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        $pull: { restrictedUsers: restrictedUserId },
+      },
+      { new: true },
+    ).select("friends restrictedUsers messageReceiveSetting");
+
+    if (updatedUser) {
+      await this.syncPrivateConversationReceiveSetting(updatedUser);
+    }
 
     return { success: true };
   }
@@ -1636,6 +1910,20 @@ class UserService {
       await Promise.all([
         User.findByIdAndUpdate(userId, { $addToSet: { friends: senderId } }),
         User.findByIdAndUpdate(senderId, { $addToSet: { friends: userId } }),
+        existingConv
+          ? Conversation.updateOne(
+              { _id: existingConv._id },
+              {
+                $set: {
+                  requestStatus: "accepted",
+                  requestInitiatorId: null,
+                  requestRecipientId: null,
+                  pendingMessageCount: 0,
+                  requestAcceptedByRecipient: false,
+                },
+              },
+            )
+          : Promise.resolve(),
         Notification.create({
           recipientId: senderId,
           senderId: userId,
@@ -1743,6 +2031,19 @@ class UserService {
         type: CONVERSATION_TYPES.PRIVATE,
         members: [{ userId }, { userId: senderId }],
       });
+    } else {
+      await Conversation.updateOne(
+        { _id: conversation._id },
+        {
+          $set: {
+            requestStatus: "accepted",
+            requestInitiatorId: null,
+            requestRecipientId: null,
+            pendingMessageCount: 0,
+            requestAcceptedByRecipient: false,
+          },
+        },
+      );
     }
 
     // Lấy thông tin của cả 2 users
@@ -1828,9 +2129,17 @@ class UserService {
     }
 
     // Xóa quan hệ bạn bè
-    await Promise.all([
-      User.findByIdAndUpdate(userId, { $pull: { friends: friendId } }),
-      User.findByIdAndUpdate(friendId, { $pull: { friends: userId } }),
+    const [updatedUser, updatedFriend] = await Promise.all([
+      User.findByIdAndUpdate(
+        userId,
+        { $pull: { friends: friendId } },
+        { new: true },
+      ).select("friends restrictedUsers messageReceiveSetting"),
+      User.findByIdAndUpdate(
+        friendId,
+        { $pull: { friends: userId } },
+        { new: true },
+      ).select("friends restrictedUsers messageReceiveSetting"),
       FriendRequest.deleteMany({
         $or: [
           { senderId: userId, receiverId: friendId },
@@ -1839,19 +2148,12 @@ class UserService {
       }),
     ]);
 
-    // Tìm và xóa cuộc trò chuyện riêng tư
-    const privateConversations = await Conversation.find({
-      type: CONVERSATION_TYPES.PRIVATE,
-      "members.userId": { $all: [userId, friendId] },
-    }).select("_id");
-
-    if (privateConversations.length > 0) {
-      const convIds = privateConversations.map((c) => c._id);
-      await Promise.all([
-        Message.deleteMany({ conversationId: { $in: convIds } }),
-        Conversation.deleteMany({ _id: { $in: convIds } }),
-      ]);
-    }
+    await Promise.all([
+      updatedUser ? this.syncPrivateConversationReceiveSetting(updatedUser) : null,
+      updatedFriend
+        ? this.syncPrivateConversationReceiveSetting(updatedFriend)
+        : null,
+    ]);
 
     return { success: true };
   }

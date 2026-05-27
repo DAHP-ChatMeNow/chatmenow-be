@@ -3,6 +3,11 @@ const CONVERSATION_TYPES = {
   GROUP: "group",
 };
 
+const CONVERSATION_REQUEST_STATUS = {
+  ACCEPTED: "accepted",
+  PENDING: "pending",
+};
+
 const MEMBER_ROLES = {
   ADMIN: "admin",
   MEMBER: "member",
@@ -10,5 +15,6 @@ const MEMBER_ROLES = {
 
 module.exports = {
   CONVERSATION_TYPES,
+  CONVERSATION_REQUEST_STATUS,
   MEMBER_ROLES,
 };

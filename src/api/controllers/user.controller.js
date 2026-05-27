@@ -1,5 +1,6 @@
 const userService = require("../service/user.service");
 const premiumService = require("../service/premium.service");
+const Conversation = require("../models/conversation.model");
 
 const DEFAULT_VNPAY_FE_RETURN_URL =
   "http://localhost:3000/payment/vnpay-return";
@@ -77,6 +78,22 @@ const emitConversationCreated = (io, conversationId, userIds, payload = {}) => {
   for (const userId of userIds || []) {
     if (!userId) continue;
     io.to(String(userId)).emit("conversation:created", nextPayload);
+  }
+};
+
+const emitConversationUpdated = (io, conversationId, userIds, payload = {}) => {
+  if (!io || !conversationId) return;
+
+  const nextPayload = {
+    conversationId: String(conversationId),
+    ...payload,
+  };
+
+  io.to(String(conversationId)).emit("conversation:updated", nextPayload);
+
+  for (const userId of userIds || []) {
+    if (!userId) continue;
+    io.to(String(userId)).emit("conversation:updated", nextPayload);
   }
 };
 
@@ -200,6 +217,23 @@ exports.getBlockedUsers = async (req, res) => {
   }
 };
 
+exports.getRestrictedUsers = async (req, res) => {
+  try {
+    const result = await userService.getRestrictedUsers(req.user.userId);
+
+    res.status(200).json({
+      success: true,
+      restrictedUsers: result.restrictedUsers,
+      total: result.total,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.getFriendProfile = async (req, res) => {
   try {
     const viewerId = req.user.userId;
@@ -259,6 +293,34 @@ exports.updateProfile = async (req, res) => {
       req.user.userId,
       req.body,
     );
+
+    const shouldSyncMessagePermissionRealtime =
+      req.body?.messageReceiveSetting !== undefined;
+    const syncedConversationIds = Array.isArray(updatedUser?._syncedConversationIds)
+      ? updatedUser._syncedConversationIds
+      : [];
+
+    if (shouldSyncMessagePermissionRealtime && syncedConversationIds.length > 0) {
+      const io = req.app.get("io");
+      const impactedConversations = await Conversation.find({
+        _id: { $in: syncedConversationIds },
+      })
+        .select("_id members.userId")
+        .lean();
+
+      impactedConversations.forEach((conversation) => {
+        const conversationId = String(conversation?._id || "").trim();
+        if (!conversationId) return;
+
+        const memberIds = (conversation?.members || [])
+          .map((member) => String(member?.userId || "").trim())
+          .filter(Boolean);
+
+        emitConversationUpdated(io, conversationId, memberIds, {
+          source: "messageReceiveSettingUpdated",
+        });
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -357,6 +419,42 @@ exports.unblockUser = async (req, res) => {
     res.status(200).json({
       success: true,
       message: "Đã mở chặn người dùng",
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.restrictUser = async (req, res) => {
+  try {
+    const result = await userService.restrictUser(
+      req.user.userId,
+      req.params.userId,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Đã thêm vào danh sách hạn chế",
+      restrictedUser: result.restrictedUser,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.unrestrictUser = async (req, res) => {
+  try {
+    await userService.unrestrictUser(req.user.userId, req.params.userId);
+
+    res.status(200).json({
+      success: true,
+      message: "Đã bỏ hạn chế người dùng",
     });
   } catch (error) {
     if (error.statusCode) {
@@ -626,7 +724,7 @@ exports.removeFriend = async (req, res) => {
 
     res
       .status(200)
-      .json({ success: true, message: "Đã xóa bạn bè và hội thoại riêng tư" });
+      .json({ success: true, message: "Đã xóa bạn bè" });
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ message: error.message });

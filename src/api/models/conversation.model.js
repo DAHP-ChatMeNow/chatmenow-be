@@ -1,5 +1,8 @@
 const mongoose = require("mongoose");
 const Schema = mongoose.Schema;
+const {
+  CONVERSATION_REQUEST_STATUS,
+} = require("../../constants/conversation.constants");
 
 const ConversationSchema = new Schema({
   type: { type: String, enum: ["private", "group"], default: "private" },
@@ -33,6 +36,31 @@ const ConversationSchema = new Schema({
     createdAt: { type: Date, default: null }
   },
 
+  requestStatus: {
+    type: String,
+    enum: Object.values(CONVERSATION_REQUEST_STATUS),
+    default: CONVERSATION_REQUEST_STATUS.ACCEPTED,
+  },
+  requestInitiatorId: {
+    type: Schema.Types.ObjectId,
+    ref: "User",
+    default: null,
+  },
+  requestRecipientId: {
+    type: Schema.Types.ObjectId,
+    ref: "User",
+    default: null,
+  },
+  pendingMessageCount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  requestAcceptedByRecipient: {
+    type: Boolean,
+    default: false,
+  },
+
   pinnedMessages: [
     {
       messageId: { type: Schema.Types.ObjectId, ref: "Message", required: true },
@@ -42,7 +70,7 @@ const ConversationSchema = new Schema({
   ]
 }, { timestamps: true });
 
-
 ConversationSchema.index({ updatedAt: -1 });
+ConversationSchema.index({ requestRecipientId: 1, requestStatus: 1, updatedAt: -1 });
 
 module.exports = mongoose.model("Conversation", ConversationSchema);

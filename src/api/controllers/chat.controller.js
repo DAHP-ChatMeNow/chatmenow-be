@@ -609,24 +609,39 @@ exports.sendMessage = async (req, res) => {
       });
     }
 
-    const message = await chatService.sendMessage(senderId, req.body);
+    const result = await chatService.sendMessage(senderId, req.body);
+    const message = result?.message || result;
+    const updatedConversation = result?.conversation || null;
 
     const io = req.app.get("io");
-    const conversation = await Conversation.findById(message.conversationId)
-      .select("members.userId")
-      .lean();
+    const conversation =
+      updatedConversation ||
+      (await Conversation.findById(message.conversationId)
+        .select(
+          "_id requestStatus requestInitiatorId requestRecipientId pendingMessageCount requestAcceptedByRecipient members.userId",
+        )
+        .lean());
 
     // Keep old and new event names for FE compatibility.
     io.to(message.conversationId.toString()).emit("newMessage", message);
     io.to(message.conversationId.toString()).emit("message:new", message);
 
     const memberIds = (conversation?.members || [])
-      .map((member) => member.userId?.toString())
+      .map((member) => {
+        const rawUserId = member?.userId;
+        if (!rawUserId) return "";
+        if (typeof rawUserId === "string") return rawUserId;
+        return String(rawUserId?._id || rawUserId?.id || rawUserId);
+      })
       .filter(Boolean);
 
     for (const memberId of memberIds) {
       io.to(memberId).emit("newMessage", message);
       io.to(memberId).emit("message:new", message);
+      io.to(memberId).emit("conversation:updated", {
+        conversationId: String(message.conversationId),
+        source: "sendMessage",
+      });
     }
 
     if (memberIds.length > 1) {
@@ -714,6 +729,30 @@ exports.markConversationAsRead = async (req, res) => {
     res.status(200).json({
       success: true,
       ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.acceptMessageRequest = async (req, res) => {
+  try {
+    const conversation = await chatService.acceptMessageRequest(
+      req.user.userId,
+      req.params.conversationId,
+    );
+
+    const io = req.app.get("io");
+    emitConversationEvent(io, conversation, "conversation:updated", {
+      source: "acceptMessageRequest",
+    });
+
+    res.status(200).json({
+      success: true,
+      conversation,
     });
   } catch (error) {
     if (error.statusCode) {

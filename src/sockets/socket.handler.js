@@ -280,7 +280,7 @@ function initializeSocket(io) {
           return;
         }
 
-        const savedMessage = await chatService.sendMessage(normalizedSenderId, {
+        const sendResult = await chatService.sendMessage(normalizedSenderId, {
           conversationId,
           content: text,
           type,
@@ -288,6 +288,7 @@ function initializeSocket(io) {
           mentionAll,
           mentionUserIds,
         });
+        const savedMessage = sendResult?.message || sendResult;
 
         io.to(conversationId).emit("newMessage", savedMessage);
         io.to(conversationId).emit("message:new", savedMessage);
@@ -303,6 +304,13 @@ function initializeSocket(io) {
               (memberId) =>
                 memberId && String(memberId) !== String(normalizedSenderId),
             );
+
+          recipientIds.forEach((memberId) => {
+            io.to(memberId).emit("conversation:updated", {
+              conversationId,
+              source: "socket.sendMessage",
+            });
+          });
 
           if (recipientIds.length > 0 && conversation?.type === "group") {
             void aiSummaryService.registerPendingMessages({
