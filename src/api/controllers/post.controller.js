@@ -324,7 +324,7 @@ exports.addComment = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { postId } = req.params;
-    const { content, replyToCommentId } = req.body;
+    const { content, replyToCommentId } = req.body || {};
 
     const newComment = await postService.addComment(
       userId,
