@@ -6,8 +6,55 @@ const s3Client = require("../../config/s3");
 
 const storage = multer.memoryStorage();
 
+const getMimetypeFromExtension = (filename) => {
+  if (!filename) return "";
+  const ext = path.extname(filename).toLowerCase();
+  switch (ext) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".mp4":
+      return "video/mp4";
+    case ".mov":
+      return "video/quicktime";
+    case ".mpeg":
+      return "video/mpeg";
+    case ".avi":
+      return "video/x-msvideo";
+    default:
+      return "";
+  }
+};
+
 // Middleware cho upload avatar (single file)
-const multerUploads = multer({ storage }).single("image");
+const multerUploads = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype || file.mimetype === "application/octet-stream" || file.mimetype === "") {
+      const detected = getMimetypeFromExtension(file.originalname);
+      if (detected) {
+        file.mimetype = detected;
+      }
+    }
+    const allowedMimeTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/gif",
+      "image/webp"
+    ];
+    if (!allowedMimeTypes.includes(file.mimetype)) {
+      cb(new Error("Chỉ chấp nhận file ảnh (JPEG, PNG, GIF, WEBP)"));
+      return;
+    }
+    cb(null, true);
+  }
+}).single("image");
 
 // Middleware cho upload media của post (multiple files - ảnh và video)
 const multerPostMedia = multer({
@@ -16,6 +63,12 @@ const multerPostMedia = multer({
     fileSize: 50 * 1024 * 1024, // 50MB max file size
   },
   fileFilter: (req, file, cb) => {
+    if (!file.mimetype || file.mimetype === "application/octet-stream" || file.mimetype === "") {
+      const detected = getMimetypeFromExtension(file.originalname);
+      if (detected) {
+        file.mimetype = detected;
+      }
+    }
     const allowedMimeTypes = [
       "image/jpeg",
       "image/png",
@@ -59,6 +112,12 @@ const multerStoryMedia = multer({
     fileSize: 400 * 1024 * 1024, // 20MB max file size
   },
   fileFilter: (req, file, cb) => {
+    if (!file.mimetype || file.mimetype === "application/octet-stream" || file.mimetype === "") {
+      const detected = getMimetypeFromExtension(file.originalname);
+      if (detected) {
+        file.mimetype = detected;
+      }
+    }
     const allowedMimeTypes = [
       "image/jpeg",
       "image/png",

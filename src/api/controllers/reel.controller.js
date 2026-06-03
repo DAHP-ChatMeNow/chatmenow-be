@@ -30,6 +30,12 @@ exports.createReel = async (req, res) => {
             videoKey,
         );
 
+        // Emit socket event to notify all connected clients
+        const io = req.app.get("io");
+        if (io) {
+            io.emit("reel:new", { reel, userId });
+        }
+
         return res.status(201).json({ success: true, reel });
     } catch (error) {
         if (error.statusCode) {
@@ -128,7 +134,16 @@ exports.getComments = async (req, res) => {
 
 exports.deleteReel = async (req, res) => {
     try {
-        const result = await reelService.deleteReel(req.user.userId, req.params.id);
+        const userId = req.user.userId;
+        const reelId = req.params.id;
+        const result = await reelService.deleteReel(userId, reelId);
+
+        // Emit socket event to notify all connected clients
+        const io = req.app.get("io");
+        if (io) {
+            io.emit("reel:deleted", { reelId, userId });
+        }
+
         return res.status(200).json(result);
     } catch (error) {
         if (error.statusCode) {

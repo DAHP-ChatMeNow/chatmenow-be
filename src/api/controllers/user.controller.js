@@ -1,6 +1,7 @@
 const userService = require("../service/user.service");
 const premiumService = require("../service/premium.service");
 const Conversation = require("../models/conversation.model");
+const User = require("../models/user.model");
 
 const DEFAULT_VNPAY_FE_RETURN_URL =
   "http://localhost:3000/payment/vnpay-return";
@@ -322,6 +323,22 @@ exports.updateProfile = async (req, res) => {
       });
     }
 
+    const io = req.app.get("io");
+    if (io) {
+      const authorUser = await User.findById(req.user.userId).select("friends").lean();
+      const friends = authorUser?.friends || [];
+      const payload = {
+        userId: req.user.userId,
+        avatar: updatedUser.avatar,
+        displayName: updatedUser.displayName,
+        coverImage: updatedUser.coverImage,
+      };
+      io.to(req.user.userId.toString()).emit("user:profile-updated", payload);
+      friends.forEach((friendId) => {
+        io.to(friendId.toString()).emit("user:profile-updated", payload);
+      });
+    }
+
     res.status(200).json({
       success: true,
       message: "Cập nhật thông tin thành công",
@@ -347,17 +364,21 @@ exports.updateAvatar = async (req, res) => {
       req.body.avatar,
     );
 
-    // ✅ Emit socket event để notify friends về avatar mới
+    // Emit socket event to notify friends and other devices
     const io = req.app.get("io");
-    const friends = updatedUser.friends || [];
-
-    friends.forEach((friendId) => {
-      io.to(friendId.toString()).emit("friend_avatar_updated", {
+    if (io) {
+      const friends = updatedUser.friends || [];
+      const payload = {
         userId: req.user.userId,
         avatar: updatedUser.avatar,
         displayName: updatedUser.displayName,
+        coverImage: updatedUser.coverImage,
+      };
+      io.to(req.user.userId.toString()).emit("user:profile-updated", payload);
+      friends.forEach((friendId) => {
+        io.to((friendId._id || friendId).toString()).emit("user:profile-updated", payload);
       });
-    });
+    }
 
     res.status(200).json({
       success: true,
@@ -378,6 +399,22 @@ exports.updateCoverImage = async (req, res) => {
       req.user.userId,
       req.body.coverImage,
     );
+
+    const io = req.app.get("io");
+    if (io) {
+      const authorUser = await User.findById(req.user.userId).select("friends").lean();
+      const friends = authorUser?.friends || [];
+      const payload = {
+        userId: req.user.userId,
+        avatar: updatedUser.avatar,
+        displayName: updatedUser.displayName,
+        coverImage: updatedUser.coverImage,
+      };
+      io.to(req.user.userId.toString()).emit("user:profile-updated", payload);
+      friends.forEach((friendId) => {
+        io.to(friendId.toString()).emit("user:profile-updated", payload);
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -709,7 +746,7 @@ exports.removeFriend = async (req, res) => {
     const userId = req.user.userId;
     const friendId = req.params.userId;
 
-    await userService.removeFriend(userId, friendId);
+    const result = await userService.removeFriend(userId, friendId);
 
     // ✅ Emit socket event cho cả 2 users
     const io = req.app.get("io");
@@ -721,6 +758,16 @@ exports.removeFriend = async (req, res) => {
     io.to(friendId).emit("friend_removed", {
       removedFriendId: userId,
     });
+
+    if (result.conversation) {
+      const payload = {
+        conversationId: result.conversation._id.toString(),
+        conversation: result.conversation,
+        source: "removeFriend",
+      };
+      io.to(userId).emit("conversation:deleted", payload);
+      io.to(friendId).emit("conversation:deleted", payload);
+    }
 
     res
       .status(200)

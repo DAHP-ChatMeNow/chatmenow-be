@@ -1005,6 +1005,13 @@ exports.removeMemberFromGroup = async (req, res) => {
           removedMemberId: memberId,
         });
       }
+
+      // Gửi sự kiện xóa cuộc hội thoại cho người bị kích
+      io.to(String(memberId)).emit("conversation:deleted", {
+        conversationId,
+        conversation: result.conversation || { _id: conversationId },
+        source: "removeMemberFromGroup",
+      });
     }
 
     res.status(200).json({
@@ -1042,6 +1049,13 @@ exports.leaveGroup = async (req, res) => {
           source: "leaveGroup",
         });
       }
+
+      // Gửi sự kiện xóa cuộc hội thoại cho người vừa rời
+      io.to(String(userId)).emit("conversation:deleted", {
+        conversationId,
+        conversation: result.conversation || { _id: conversationId },
+        source: "leaveGroup",
+      });
     }
 
     res.status(200).json({
@@ -1155,6 +1169,11 @@ exports.pinMessage = async (req, res) => {
         pinnedMessages: result.pinnedMessages,
         latestPinnedMessage: result.latestPinnedMessage,
       });
+      io.to(conversationId).emit("conversation:pinned-updated", {
+        conversationId,
+        pinnedMessages: result.pinnedMessages,
+        latestPinnedMessage: result.latestPinnedMessage,
+      });
     }
 
     res.status(200).json({ success: true, ...result });
@@ -1176,6 +1195,11 @@ exports.unpinMessage = async (req, res) => {
     const io = req.app.get("io");
     if (io) {
       io.to(conversationId).emit("message:unpinned", {
+        conversationId,
+        pinnedMessages: result.pinnedMessages,
+        latestPinnedMessage: result.latestPinnedMessage,
+      });
+      io.to(conversationId).emit("conversation:pinned-updated", {
         conversationId,
         pinnedMessages: result.pinnedMessages,
         latestPinnedMessage: result.latestPinnedMessage,

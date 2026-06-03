@@ -1,4 +1,5 @@
 const storyService = require("../service/story.service");
+const User = require("../models/user.model");
 
 exports.createStory = async (req, res) => {
   try {
@@ -6,6 +7,20 @@ exports.createStory = async (req, res) => {
     const file = req.file;
 
     const story = await storyService.createStory(userId, req.body, file);
+
+    // Emit socket event to notify author and friends
+    const io = req.app.get("io");
+    if (io) {
+      const authorUser = await User.findById(userId).select("friends").lean();
+      const friends = authorUser?.friends || [];
+      const payload = { story, authorId: userId };
+      
+      io.to(userId.toString()).emit("story:new", payload);
+      friends.forEach((friendId) => {
+        io.to(friendId.toString()).emit("story:new", payload);
+      });
+    }
+
     res.status(201).json(story);
   } catch (error) {
     if (error.statusCode) {
@@ -61,7 +76,23 @@ exports.markStoryViewed = async (req, res) => {
 
 exports.deleteStory = async (req, res) => {
   try {
-    const result = await storyService.deleteStory(req.user.userId, req.params.storyId);
+    const userId = req.user.userId;
+    const storyId = req.params.storyId;
+    const result = await storyService.deleteStory(userId, storyId);
+
+    // Emit socket event to notify author and friends
+    const io = req.app.get("io");
+    if (io) {
+      const authorUser = await User.findById(userId).select("friends").lean();
+      const friends = authorUser?.friends || [];
+      const payload = { storyId, authorId: userId };
+
+      io.to(userId.toString()).emit("story:deleted", payload);
+      friends.forEach((friendId) => {
+        io.to(friendId.toString()).emit("story:deleted", payload);
+      });
+    }
+
     return res.status(200).json(result);
   } catch (error) {
     if (error.statusCode) {
