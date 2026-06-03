@@ -71,21 +71,47 @@ class StoryService {
     return false;
   }
 
-  async createStory(userId, { caption = "", privacy = STORY_PRIVACY.FRIENDS, videoDuration, musicUrl = null, musicTitle = null, musicArtist = null }, file) {
-    if (!file) {
+  async createStory(userId, body = {}, file) {
+    const {
+      caption = "",
+      privacy = STORY_PRIVACY.FRIENDS,
+      videoDuration,
+      musicUrl = null,
+      musicTitle = null,
+      musicArtist = null,
+      mediaKey,
+      mediaType,
+    } = body || {};
+
+    let s3Key = "";
+    let isImage = false;
+    let isVideo = false;
+
+    if (file) {
+      isImage = file.mimetype.startsWith("image/");
+      isVideo = file.mimetype.startsWith("video/");
+
+      if (!isImage && !isVideo) {
+        throw {
+          statusCode: 400,
+          message: "Story chỉ hỗ trợ ảnh hoặc video",
+        };
+      }
+      s3Key = await uploadToS3(file, "stories");
+    } else if (mediaKey) {
+      s3Key = mediaKey;
+      isImage = mediaType === "image";
+      isVideo = mediaType === "video";
+      if (!isImage && !isVideo) {
+        const ext = path.extname(mediaKey).toLowerCase();
+        const videoExtensions = [".mp4", ".mov", ".mpeg", ".avi"];
+        isVideo = videoExtensions.includes(ext);
+        isImage = !isVideo;
+      }
+    } else {
       throw {
         statusCode: 400,
         message: "Vui lòng chọn ảnh hoặc video để đăng tin",
-      };
-    }
-
-    const isImage = file.mimetype.startsWith("image/");
-    const isVideo = file.mimetype.startsWith("video/");
-
-    if (!isImage && !isVideo) {
-      throw {
-        statusCode: 400,
-        message: "Story chỉ hỗ trợ ảnh hoặc video",
       };
     }
 
@@ -106,7 +132,6 @@ class StoryService {
           message: "Vui lòng gửi thời lượng video story",
         };
       }
-
     }
 
     await premiumService.enforceStoryCreation(userId, {
@@ -114,14 +139,12 @@ class StoryService {
       videoDuration: duration,
     });
 
-    const s3Key = await uploadToS3(file, "stories");
-
     const expiresAt = new Date(
       Date.now() + STORY_SETTINGS.EXPIRE_HOURS * 60 * 60 * 1000,
     );
 
     let cleanCaption = caption;
-    if (typeof caption === "string" && (caption.toLowerCase() === "undefined" || caption.toLowerCase() === "null")) {
+    if (typeof caption === "string" && (cleanCaption.toLowerCase() === "undefined" || cleanCaption.toLowerCase() === "null")) {
       cleanCaption = "";
     }
 

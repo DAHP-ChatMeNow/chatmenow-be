@@ -413,7 +413,7 @@ class PostService {
   /**
    * Lấy newsfeed
    */
-  async getNewsFeed(userId, { page = 1, limit = 10 }) {
+  async getNewsFeed(userId, { page = 1, limit = 10 } = {}) {
     const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
     const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
 
@@ -470,9 +470,15 @@ class PostService {
    */
   async createPost(
     userId,
-    { content, privacy, videoDurations, customAudienceIds },
+    body = {},
     files = [],
   ) {
+    const { content, privacy, videoDurations, customAudienceIds } = body || {};
+    let sanitizedContent = typeof content === "string" ? content.trim() : "";
+    if (sanitizedContent === "undefined" || sanitizedContent === "null") {
+      sanitizedContent = "";
+    }
+
     const normalizedVideoDurations = Array.isArray(videoDurations)
       ? videoDurations.map((item) => Number(item || 0))
       : typeof videoDurations === "string"
@@ -494,8 +500,23 @@ class PostService {
       customAudienceIds,
     );
 
-    // Upload media files nếu có
-    const mediaArray = [];
+    // Merge media files uploaded directly or pre-uploaded S3 keys
+    let mediaArray = [];
+
+    if (body && body.media) {
+      try {
+        const parsedMedia = typeof body.media === "string" ? JSON.parse(body.media) : body.media;
+        if (Array.isArray(parsedMedia)) {
+          mediaArray = parsedMedia.map((item) => ({
+            url: item.url || item.key || "",
+            type: item.type || "image",
+            duration: item.duration ? Number(item.duration) : undefined,
+          }));
+        }
+      } catch (err) {
+        console.error("Lỗi khi parse body.media:", err);
+      }
+    }
 
     if (files && files.length > 0) {
       let videoIndex = 0;
@@ -537,7 +558,7 @@ class PostService {
 
     const newPost = await Post.create({
       authorId: userId,
-      content,
+      content: sanitizedContent,
       privacy: normalizedPrivacy,
       customAudienceIds: resolvedAudienceIds,
       media: mediaArray,
@@ -553,7 +574,7 @@ class PostService {
   /**
    * Lấy bài viết của user hiện tại
    */
-  async getMyPosts(userId, { page = 1, limit = 10 }) {
+  async getMyPosts(userId, { page = 1, limit = 10 } = {}) {
     const visibilityFilter = {
       authorId: userId,
       isDeleted: { $ne: true },
@@ -593,7 +614,7 @@ class PostService {
   /**
    * Lấy bài viết của người khác
    */
-  async getUserPosts(targetUserId, viewerId, { page = 1, limit = 10 }) {
+  async getUserPosts(targetUserId, viewerId, { page = 1, limit = 10 } = {}) {
     const defaultFilter = {
       authorId: targetUserId,
       isDeleted: { $ne: true },

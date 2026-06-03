@@ -226,6 +226,25 @@ class UploadService {
     };
   }
 
+  async createGenericPresignedPutUrl({ userId, folder, fileName, contentType, fileSize }) {
+    const allowedFolders = ["avatars", "covers", "posts", "stories", "chat-media"];
+    const safeFolder = allowedFolders.includes(folder) ? folder : "chat-media";
+
+    const safeFileName = this.sanitizeFileName(fileName);
+    this.validateChatAttachmentUpload(contentType, fileSize);
+
+    const key = this.buildUploadKey(safeFolder, userId, safeFileName);
+    const uploadUrl = await getSignedUploadUrlFromS3(key, contentType);
+
+    return {
+      key,
+      uploadUrl,
+      method: "PUT",
+      contentType,
+      expiresIn: 600,
+    };
+  }
+
   async getPresignedUrl(key) {
     if (!key) {
       throw {

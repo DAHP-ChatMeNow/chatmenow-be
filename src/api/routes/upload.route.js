@@ -10,6 +10,7 @@ const {
   uploadCoverImage,
   deleteCoverImage,
   getReelVideoUploadUrl,
+  getPresignedPutUrl,
 } = require("../controllers/upload.controller");
 
 router.post("/avatar", authMiddleware, multerUploads, uploadImage);
@@ -22,5 +23,6 @@ router.delete("/cover-image", authMiddleware, deleteCoverImage);
 router.get("/presign-get", authMiddleware, getPresignedUrl);
 router.post("/chat/presign-put", authMiddleware, getChatAttachmentUploadUrl);
 router.post("/reel-video/presign-put", authMiddleware, getReelVideoUploadUrl);
+router.post("/presign-put", authMiddleware, getPresignedPutUrl);
 
 module.exports = router;
