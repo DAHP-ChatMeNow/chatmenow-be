@@ -54,13 +54,18 @@ class ReelService {
             videoDuration: Number(videoDuration || 0),
         });
 
-        const hashtags = this.parseHashtags(caption);
+        let cleanCaption = caption || "";
+        if (typeof cleanCaption === "string" && (cleanCaption.toLowerCase() === "undefined" || cleanCaption.toLowerCase() === "null")) {
+            cleanCaption = "";
+        }
+
+        const hashtags = this.parseHashtags(cleanCaption);
 
         const reel = await Reel.create({
             userId,
             videoUrl: s3Key,
             duration: Number(videoDuration || 0),
-            caption,
+            caption: cleanCaption,
             hashtags,
             musicUrl: musicUrl || null,
             musicTitle: musicTitle || null,

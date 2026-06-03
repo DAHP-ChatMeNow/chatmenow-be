@@ -120,9 +120,14 @@ class StoryService {
       Date.now() + STORY_SETTINGS.EXPIRE_HOURS * 60 * 60 * 1000,
     );
 
+    let cleanCaption = caption;
+    if (typeof caption === "string" && (caption.toLowerCase() === "undefined" || caption.toLowerCase() === "null")) {
+      cleanCaption = "";
+    }
+
     const newStory = await Story.create({
       authorId: userId,
-      caption,
+      caption: cleanCaption,
       privacy,
       media: {
         url: s3Key,

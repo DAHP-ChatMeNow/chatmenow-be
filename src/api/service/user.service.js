@@ -2128,6 +2128,12 @@ class UserService {
       };
     }
 
+    // Tìm conversation private nếu tồn tại
+    const privateConv = await Conversation.findOne({
+      type: CONVERSATION_TYPES.PRIVATE,
+      "members.userId": { $all: [userId, friendId] },
+    });
+
     // Xóa quan hệ bạn bè
     const [updatedUser, updatedFriend] = await Promise.all([
       User.findByIdAndUpdate(
@@ -2146,6 +2152,8 @@ class UserService {
           { senderId: friendId, receiverId: userId },
         ],
       }),
+      privateConv ? Conversation.deleteOne({ _id: privateConv._id }) : null,
+      privateConv ? Message.deleteMany({ conversationId: privateConv._id }) : null,
     ]);
 
     await Promise.all([
@@ -2155,7 +2163,7 @@ class UserService {
         : null,
     ]);
 
-    return { success: true };
+    return { success: true, conversation: privateConv };
   }
 
   /**
