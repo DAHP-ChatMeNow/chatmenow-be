@@ -243,7 +243,7 @@ class ReelService {
     }
 
     async getComments(reelId, { cursor, limit = REEL_LIMITS.COMMENTS_PAGE_SIZE } = {}) {
-        const reel = await Reel.findOne({ _id: reelId, isDeleted: false });
+        const reel = await Reel.findOne({ _id: reelId, isDeleted: false }).select("_id").lean();
         if (!reel) {
             throw { statusCode: 404, message: "Reel không tồn tại" };
         }
@@ -254,9 +254,11 @@ class ReelService {
         }
 
         const comments = await ReelComment.find(query)
+            .select("content userId replyToCommentId createdAt")
             .sort({ createdAt: 1 })
             .limit(limit + 1)
-            .populate("userId", "displayName avatar");
+            .populate("userId", "displayName avatar")
+            .lean();
 
         const hasMore = comments.length > limit;
         const sliced = hasMore ? comments.slice(0, limit) : comments;
@@ -265,7 +267,7 @@ class ReelService {
             hasMore ? sliced[sliced.length - 1].createdAt.toISOString() : null;
 
         return {
-            comments: sliced.map((c) => c.toObject()),
+            comments: sliced,
             hasMore,
             nextCursor,
         };
