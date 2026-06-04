@@ -2,11 +2,19 @@ const Account = require("../models/account.model");
 const User = require("../models/user.model");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
 const { getSignedUrlFromS3 } = require("../middleware/storage");
 const { generateDefaultAvatar } = require("../../utils/avatar.helper");
 const otpService = require("./otp.service");
+const emailService = require("./email.service");
+
 const SELF_LOCK_VERIFY_SESSION_MS = 5 * 60 * 1000;
 const selfLockVerifySessionStore = new Map();
+
+// Password reset rate limiting — max 3 requests per email per 15 minutes
+const PASSWORD_RESET_WINDOW_MS = 15 * 60 * 1000;
+const PASSWORD_RESET_MAX_REQUESTS = 3;
+const passwordResetRateLimitStore = new Map();
 
 class AuthService {
   createSelfLockVerifySession(accountId) {
@@ -616,11 +624,298 @@ class AuthService {
     return user;
   }
 
-  async changePassword(userId, { oldPassword, newPassword }) {
-    throw {
-      statusCode: 200,
-      message: "Tính năng đang phát triển",
-    };
+  async changePassword(accountId, { currentPassword, newPassword, confirmPassword }, clientOrigin) {
+    // 1. Validation
+    if (!currentPassword) {
+      throw {
+        statusCode: 400,
+        message: "Mật khẩu hiện tại là bắt buộc.",
+      };
+    }
+    if (!newPassword || newPassword.length < 6) {
+      throw {
+        statusCode: 400,
+        message: "Mật khẩu mới phải có ít nhất 6 ký tự.",
+      };
+    }
+    if (!confirmPassword) {
+      throw {
+        statusCode: 400,
+        message: "Xác nhận mật khẩu mới là bắt buộc.",
+      };
+    }
+    if (newPassword !== confirmPassword) {
+      throw {
+        statusCode: 400,
+        message: "Mật khẩu xác nhận không khớp.",
+      };
+    }
+    if (newPassword === currentPassword) {
+      throw {
+        statusCode: 400,
+        message: "Mật khẩu mới phải khác mật khẩu hiện tại.",
+      };
+    }
+
+    // 2. Fetch account & verify currentPassword
+    const account = await Account.findById(accountId);
+    if (!account) {
+      throw {
+        statusCode: 404,
+        message: "Tài khoản không tồn tại.",
+      };
+    }
+
+    const isMatch = await account.comparePassword(currentPassword);
+    if (!isMatch) {
+      throw {
+        statusCode: 403,
+        message: "Mật khẩu hiện tại không chính xác.",
+      };
+    }
+
+    // 3. Hash new password
+    const rounds = parseInt(process.env.BCRYPT_ROUNDS, 10) || 10;
+    const salt = await bcrypt.genSalt(rounds);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    // 4. Update account and invalidate sessions
+    await Account.updateOne(
+      { _id: accountId },
+      {
+        $set: {
+          password: hashedPassword,
+          passwordChangedAt: new Date(),
+          currentSession: {
+            sessionId: null,
+            deviceId: null,
+            deviceName: "",
+            loggedInAt: null,
+          },
+          rememberedLogins: [],
+        },
+      }
+    );
+
+    // 5. Send notification email asynchronously
+    // Resolve origin
+    const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(",").map((o) => o.trim()) || [];
+    const frontendOrigin =
+      clientOrigin && allowedOrigins.includes(clientOrigin.replace(/\/+$/, ""))
+        ? clientOrigin.replace(/\/+$/, "")
+        : "https://dev.chatmenow.cloud";
+
+    // Get user displayName
+    let displayName = "Người dùng";
+    try {
+      const user = await User.findOne({ accountId });
+      if (user && user.displayName) {
+        displayName = user.displayName;
+      }
+    } catch (err) {
+      console.error("[Auth] Failed to find user for display name:", err.message);
+    }
+
+    // Send email without waiting / blocking the response (fire and forget with try/catch)
+    emailService.sendPasswordChangedEmail(account.email, displayName, frontendOrigin).catch((err) => {
+      console.error("[Email] Failed to send password changed email:", err.message);
+    });
+  }
+
+  // ─── PASSWORD RESET ────────────────────────────────────────────────
+
+  /**
+   * Check in-memory rate limit for forgot-password requests.
+   * Allows PASSWORD_RESET_MAX_REQUESTS per email within PASSWORD_RESET_WINDOW_MS.
+   */
+  checkForgotPasswordRateLimit(email) {
+    const key = `pwd-reset:${email}`;
+    const now = Date.now();
+    const entry = passwordResetRateLimitStore.get(key);
+
+    if (!entry || now - entry.windowStart >= PASSWORD_RESET_WINDOW_MS) {
+      passwordResetRateLimitStore.set(key, { windowStart: now, count: 1 });
+      return;
+    }
+
+    entry.count += 1;
+
+    if (entry.count > PASSWORD_RESET_MAX_REQUESTS) {
+      throw {
+        statusCode: 429,
+        message: "Quá nhiều yêu cầu đặt lại mật khẩu. Vui lòng thử lại sau 15 phút.",
+      };
+    }
+  }
+
+  /**
+   * Forgot password flow:
+   * 1. Validate & normalize email
+   * 2. Rate limit per email
+   * 3. Find account — if not found, return silently (no information leakage)
+   * 4. Generate secure random token, store SHA-256 hash + 15-min expiry
+   * 5. Send password reset email
+   *
+   * @param {string} email
+   */
+  async forgotPassword(email, clientOrigin) {
+    if (!email) {
+      throw {
+        statusCode: 400,
+        message: "Vui lòng nhập địa chỉ email.",
+      };
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Rate limit per email — throws 429 if exceeded
+    this.checkForgotPasswordRateLimit(normalizedEmail);
+
+    const account = await Account.findOne({ email: normalizedEmail });
+
+    // If account doesn't exist, return silently to prevent email enumeration
+    if (!account) {
+      return;
+    }
+
+    // Generate a cryptographically secure random token
+    const rawToken = crypto.randomBytes(32).toString("hex");
+
+    // Store only the SHA-256 hash of the token in the database
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(rawToken)
+      .digest("hex");
+
+    account.passwordResetToken = hashedToken;
+    account.passwordResetExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    // Use updateOne to avoid triggering the password hash pre-save hook
+    await Account.updateOne(
+      { _id: account._id },
+      {
+        $set: {
+          passwordResetToken: hashedToken,
+          passwordResetExpires: account.passwordResetExpires,
+        },
+      },
+    );
+
+    // Dynamic resolution of frontend URL based on ALLOWED_ORIGINS
+    const defaultMobileOrigins = [
+      "http://localhost",
+      "https://localhost",
+      "capacitor://localhost",
+    ];
+    const envAllowedOrigins = process.env.ALLOWED_ORIGINS
+      ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
+      : [];
+    const allowedOrigins = new Set([...defaultMobileOrigins, ...envAllowedOrigins]);
+
+    let baseUrl = "";
+    if (clientOrigin) {
+      const cleanOrigin = clientOrigin.replace(/\/+$/, "").trim();
+      if (allowedOrigins.has(cleanOrigin)) {
+        baseUrl = cleanOrigin;
+      }
+    }
+
+    if (!baseUrl) {
+      const webOrigins = envAllowedOrigins.filter(
+        (o) => o.startsWith("http://") || o.startsWith("https://")
+      );
+      baseUrl = webOrigins[0] || "http://localhost:3000";
+    }
+
+    const resetUrl = `${baseUrl.replace(/\/+$/, "")}/reset-password?token=${rawToken}`;
+
+    // Send email — errors here are caught by the controller
+    await emailService.sendPasswordResetEmail(normalizedEmail, resetUrl);
+  }
+
+  /**
+   * Reset password flow:
+   * 1. Validate inputs (token, password, confirmPassword)
+   * 2. Hash incoming token with SHA-256 and look up account
+   * 3. Verify token hasn't expired
+   * 4. Hash new password with bcrypt
+   * 5. Update account, clear reset token fields, set passwordChangedAt
+   * 6. Invalidate all sessions (currentSession + rememberedLogins)
+   *
+   * @param {Object} params
+   * @param {string} params.token           - Raw reset token from the email link
+   * @param {string} params.password        - New password
+   * @param {string} params.confirmPassword - Password confirmation
+   */
+  async resetPassword({ token, password, confirmPassword }) {
+    // ── Input validation ──
+    if (!token) {
+      throw {
+        statusCode: 400,
+        message: "Thiếu mã đặt lại mật khẩu.",
+      };
+    }
+
+    if (!password || password.length < 6) {
+      throw {
+        statusCode: 400,
+        message: "Mật khẩu mới phải có ít nhất 6 ký tự.",
+      };
+    }
+
+    if (password !== confirmPassword) {
+      throw {
+        statusCode: 400,
+        message: "Mật khẩu xác nhận không khớp.",
+      };
+    }
+
+    // ── Token verification ──
+    // Hash the incoming raw token to compare with stored hash
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(token)
+      .digest("hex");
+
+    const account = await Account.findOne({
+      passwordResetToken: hashedToken,
+      passwordResetExpires: { $gt: new Date() },
+    });
+
+    if (!account) {
+      throw {
+        statusCode: 400,
+        message: "Mã đặt lại mật khẩu không hợp lệ hoặc đã hết hạn.",
+      };
+    }
+
+    // ── Update password ──
+    const rounds = parseInt(process.env.BCRYPT_ROUNDS, 10) || 10;
+    const salt = await bcrypt.genSalt(rounds);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // Use updateOne to set the already-hashed password directly,
+    // bypassing the pre-save hook which would double-hash it
+    await Account.updateOne(
+      { _id: account._id },
+      {
+        $set: {
+          password: hashedPassword,
+          passwordChangedAt: new Date(),
+          // Clear reset token fields (single-use token)
+          passwordResetToken: null,
+          passwordResetExpires: null,
+          // Invalidate all sessions — force re-login on all devices
+          currentSession: {
+            sessionId: null,
+            deviceId: null,
+            deviceName: "",
+            loggedInAt: null,
+          },
+          rememberedLogins: [],
+        },
+      },
+    );
   }
 
   async sendSelfLockOtp(accountId) {
@@ -829,3 +1124,4 @@ class AuthService {
 }
 
 module.exports = new AuthService();
+

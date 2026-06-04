@@ -200,13 +200,15 @@ exports.getMe = async (req, res) => {
 
 exports.changePassword = async (req, res) => {
   try {
-    await authService.changePassword(req.user.userId, req.body);
-    res.status(200).json({ message: "Tính năng đang phát triển" });
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+    const clientOrigin = req.headers.origin || (req.headers.referer ? new URL(req.headers.referer).origin : null);
+    await authService.changePassword(req.user.accountId, { currentPassword, newPassword, confirmPassword }, clientOrigin);
+    res.status(200).json({ message: "Đổi mật khẩu thành công!" });
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ message: error.message });
     }
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ message: "Lỗi server: " + error.message });
   }
 };
 
@@ -287,6 +289,59 @@ exports.confirmUnlock = async (req, res) => {
       success: true,
       unlocked: result.unlocked,
       message: result.message,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    res.status(500).json({ message: "Lỗi server: " + error.message });
+  }
+};
+
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+    const clientOrigin = req.headers.origin || (req.headers.referer ? new URL(req.headers.referer).origin : null);
+    await authService.forgotPassword(email, clientOrigin);
+
+    // Always return a generic success message — never reveal
+    // whether the email exists in the system (prevents enumeration)
+    res.status(200).json({
+      success: true,
+      message:
+        "Nếu email này tồn tại trong hệ thống, chúng tôi đã gửi liên kết đặt lại mật khẩu.",
+    });
+  } catch (error) {
+    // Rate limit errors (429) should be forwarded to the client
+    if (error.statusCode === 429) {
+      return res.status(429).json({ message: error.message });
+    }
+
+    // For any other error (including email send failures),
+    // still return the generic message to avoid information leakage
+    if (error.statusCode === 400) {
+      return res.status(400).json({ message: error.message });
+    }
+
+    // Log unexpected errors but return the generic message
+    console.error("[Auth] forgotPassword unexpected error:", error.message);
+    res.status(200).json({
+      success: true,
+      message:
+        "Nếu email này tồn tại trong hệ thống, chúng tôi đã gửi liên kết đặt lại mật khẩu.",
+    });
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const { token, password, confirmPassword } = req.body;
+    await authService.resetPassword({ token, password, confirmPassword });
+
+    res.status(200).json({
+      success: true,
+      message:
+        "Mật khẩu đã được đặt lại thành công. Vui lòng đăng nhập lại.",
     });
   } catch (error) {
     if (error.statusCode) {
