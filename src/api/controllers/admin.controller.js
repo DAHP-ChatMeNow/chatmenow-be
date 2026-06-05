@@ -76,3 +76,98 @@ exports.updatePremiumConfig = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+exports.getPremiumPlans = async (req, res) => {
+  try {
+    const result = await adminService.getPremiumPlans();
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.createPremiumPlan = async (req, res) => {
+  try {
+    const result = await adminService.createPremiumPlan(req.body || {});
+
+    res.status(201).json({
+      success: true,
+      message: "Đã tạo gói Premium",
+      plan: result.plan,
+      config: result.config,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.updatePremiumPlan = async (req, res) => {
+  try {
+    const result = await adminService.updatePremiumPlan(
+      req.params.planCode,
+      req.body || {},
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Đã cập nhật gói Premium",
+      plan: result.plan,
+      config: result.config,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.deletePremiumPlan = async (req, res) => {
+  try {
+    const result = await adminService.deletePremiumPlan(req.params.planCode);
+
+    res.status(200).json({
+      success: true,
+      message: "Đã xóa gói Premium",
+      deletedPlanCode: result.deletedPlanCode,
+      config: result.config,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.setDefaultPremiumPlan = async (req, res) => {
+  try {
+    const config = await adminService.setDefaultPremiumPlan(req.params.planCode);
+
+    res.status(200).json({
+      success: true,
+      message: "Đã cập nhật gói mặc định",
+      config,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+
+    res.status(500).json({ message: error.message });
+  }
+};

@@ -1128,6 +1128,8 @@ class PostService {
       };
     }
 
+    await premiumService.enforceInteraction(userId);
+
     await Post.findByIdAndUpdate(
       postId,
       {
@@ -1466,6 +1468,7 @@ class PostService {
    */
   async addComment(userId, postId, content, replyToCommentId = null) {
     await this.getAccessiblePost(postId, userId);
+    await premiumService.enforceInteraction(userId);
 
     let validatedReplyToCommentId = null;
 

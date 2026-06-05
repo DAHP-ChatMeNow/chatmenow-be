@@ -189,6 +189,7 @@ class ReelService {
             await Reel.findByIdAndUpdate(reelId, { $inc: { likeCount: -1 } });
             return { liked: false, likeCount: Math.max(0, reel.likeCount - 1) };
         } else {
+            await premiumService.enforceInteraction(userId);
             await ReelLike.create({ reelId, userId });
             await Reel.findByIdAndUpdate(reelId, { $inc: { likeCount: 1 } });
 
@@ -217,6 +218,8 @@ class ReelService {
         if (!content || !content.trim()) {
             throw { statusCode: 400, message: "Nội dung comment không được trống" };
         }
+
+        await premiumService.enforceInteraction(userId);
 
         const comment = await ReelComment.create({
             reelId,
