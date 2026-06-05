@@ -72,6 +72,145 @@ class EmailService {
       };
     }
   }
+
+  /**
+   * Send a password reset email with a secure reset link.
+   * Template design matches the existing OTP email for brand consistency.
+   *
+   * @param {string} toEmail - Recipient email address
+   * @param {string} resetUrl - Full reset URL with token
+   */
+  async sendPasswordResetEmail(toEmail, resetUrl) {
+    const transporter = this.getTransporter();
+
+    const mailOptions = {
+      from: `"Chat Me Now" <${process.env.GMAIL_USER}>`,
+      to: toEmail,
+      subject: "Đặt lại mật khẩu - Chat Me Now",
+      html: `
+        <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08);">
+          <div style="background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 50%, #7c3aed 100%); padding: 40px 32px; text-align: center;">
+            <h1 style="color: #ffffff; font-size: 24px; font-weight: 700; margin: 16px 0 4px;">Chat Me Now</h1>
+            <p style="color: rgba(255,255,255,0.85); font-size: 14px; margin: 0;">Đặt lại mật khẩu</p>
+          </div>
+          <div style="padding: 40px 32px;">
+            <p style="color: #334155; font-size: 16px; line-height: 1.6; margin: 0 0 8px;">Xin chào,</p>
+            <p style="color: #334155; font-size: 16px; line-height: 1.6; margin: 0 0 28px;">
+              Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản Chat Me Now của bạn. Nhấn nút bên dưới để tạo mật khẩu mới:
+            </p>
+            <div style="text-align: center; margin: 0 0 28px;">
+              <a href="${resetUrl}" style="display: inline-block; background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%); color: #ffffff; font-size: 16px; font-weight: 600; text-decoration: none; padding: 14px 40px; border-radius: 8px; letter-spacing: 0.5px;">
+                Đặt lại mật khẩu
+              </a>
+            </div>
+            <div style="background: #f0f4ff; border-radius: 8px; padding: 16px; margin: 0 0 28px;">
+              <p style="color: #64748b; font-size: 13px; margin: 0 0 8px;">Nếu nút không hoạt động, hãy sao chép và dán liên kết sau vào trình duyệt:</p>
+              <p style="color: #2563eb; font-size: 13px; word-break: break-all; margin: 0;">${resetUrl}</p>
+            </div>
+            <div style="background: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 0 0 28px;">
+              <p style="color: #92400e; font-size: 14px; margin: 0; line-height: 1.5;">
+                ⏱️ Liên kết này có hiệu lực trong <strong>15 phút</strong>. Sau thời gian này, bạn cần yêu cầu đặt lại mật khẩu mới.
+              </p>
+            </div>
+            <p style="color: #64748b; font-size: 14px; line-height: 1.6; margin: 0 0 8px;">
+              Nếu bạn không yêu cầu đặt lại mật khẩu, vui lòng bỏ qua email này. Mật khẩu hiện tại của bạn sẽ không thay đổi.
+            </p>
+            <p style="color: #64748b; font-size: 14px; line-height: 1.6; margin: 0;">
+              Nếu cần hỗ trợ, vui lòng liên hệ đội ngũ hỗ trợ tại <a href="mailto:${process.env.GMAIL_USER}" style="color: #2563eb; text-decoration: none;">${process.env.GMAIL_USER}</a>.
+            </p>
+          </div>
+          <div style="background: #f8fafc; padding: 24px 32px; text-align: center; border-top: 1px solid #e2e8f0;">
+            <p style="color: #94a3b8; font-size: 12px; margin: 0;">© ${new Date().getFullYear()} Chat Me Now. All rights reserved.</p>
+          </div>
+        </div>
+      `,
+    };
+
+    try {
+      const info = await transporter.sendMail(mailOptions);
+      // Log only the message ID — never log the reset URL or token
+      console.log(`[Email] Password reset email sent to ${toEmail}: ${info.messageId}`);
+      return { success: true, messageId: info.messageId };
+    } catch (error) {
+      console.error(`[Email] Failed to send password reset email to ${toEmail}:`, error.message);
+      throw {
+        statusCode: 500,
+        message: "Không thể gửi email đặt lại mật khẩu. Vui lòng thử lại sau.",
+      };
+    }
+  }
+
+  /**
+   * Send a security notification email when user changes password.
+   *
+   * @param {string} toEmail - Recipient email address
+   * @param {string} userName - User's display name
+   * @param {string} resolvedOrigin - Base URL of frontend (from allowed origins or default)
+   */
+  async sendPasswordChangedEmail(toEmail, userName, resolvedOrigin) {
+    const transporter = this.getTransporter();
+    const cleanOrigin = resolvedOrigin.replace(/\/+$/, "");
+    const loginUrl = `${cleanOrigin}/login`;
+    const forgotPasswordUrl = `${cleanOrigin}/forgot-password`;
+    const timestamp = new Date().toLocaleString("vi-VN", {
+      timeZone: "Asia/Ho_Chi_Minh",
+    });
+
+    const mailOptions = {
+      from: `"Chat Me Now" <${process.env.GMAIL_USER}>`,
+      to: toEmail,
+      subject: "Mật khẩu của bạn đã được thay đổi - Chat Me Now",
+      html: `
+        <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08);">
+          <div style="background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 50%, #7c3aed 100%); padding: 40px 32px; text-align: center;">
+            <h1 style="color: #ffffff; font-size: 24px; font-weight: 700; margin: 16px 0 4px;">Chat Me Now</h1>
+            <p style="color: rgba(255,255,255,0.85); font-size: 14px; margin: 0;">Thông báo bảo mật</p>
+          </div>
+          <div style="padding: 40px 32px;">
+            <p style="color: #334155; font-size: 16px; line-height: 1.6; margin: 0 0 8px;">Xin chào <strong>${userName}</strong>,</p>
+            <p style="color: #334155; font-size: 16px; line-height: 1.6; margin: 0 0 28px;">
+              Mật khẩu tài khoản Chat Me Now của bạn đã được thay đổi thành công.
+            </p>
+            <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 0 0 28px;">
+              <p style="color: #64748b; font-size: 13px; margin: 0 0 4px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Thời gian thay đổi (giờ VN):</p>
+              <p style="color: #334155; font-size: 15px; font-weight: 600; margin: 0;">${timestamp}</p>
+            </div>
+            <div style="background: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 0 0 28px;">
+              <p style="color: #92400e; font-size: 14px; margin: 0; line-height: 1.5;">
+                Nếu bạn đã thực hiện thay đổi này, bạn không cần làm gì thêm.
+              </p>
+              <p style="color: #92400e; font-size: 14px; margin: 8px 0 0; line-height: 1.5;">
+                ⚠️ <strong>Nếu bạn KHÔNG thực hiện thay đổi này:</strong> Tài khoản của bạn có thể đã bị xâm nhập. Vui lòng bảo mật tài khoản ngay lập tức bằng cách sử dụng liên kết dưới đây để đặt lại mật khẩu của bạn.
+              </p>
+            </div>
+            <div style="text-align: center; margin: 0 0 28px;">
+              <a href="${loginUrl}" style="display: inline-block; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; padding: 12px 30px; border-radius: 8px; margin-right: 12px; shadow: 0 2px 4px rgba(37,99,235,0.2);">
+                Đăng nhập
+              </a>
+              <a href="${forgotPasswordUrl}" style="display: inline-block; background: #f1f5f9; color: #334155; font-size: 15px; font-weight: 600; text-decoration: none; padding: 12px 30px; border-radius: 8px; border: 1px solid #cbd5e1;">
+                Quên mật khẩu
+              </a>
+            </div>
+            <p style="color: #64748b; font-size: 13px; line-height: 1.6; margin: 0; text-align: center;">
+              Nếu cần hỗ trợ khẩn cấp, vui lòng liên hệ đội ngũ hỗ trợ tại <a href="mailto:${process.env.GMAIL_USER}" style="color: #2563eb; text-decoration: none;">${process.env.GMAIL_USER}</a>.
+            </p>
+          </div>
+          <div style="background: #f8fafc; padding: 24px 32px; text-align: center; border-top: 1px solid #e2e8f0;">
+            <p style="color: #94a3b8; font-size: 12px; margin: 0;">© ${new Date().getFullYear()} Chat Me Now. All rights reserved.</p>
+          </div>
+        </div>
+      `,
+    };
+
+    try {
+      const info = await transporter.sendMail(mailOptions);
+      console.log(`[Email] Password changed email notification sent to ${toEmail}: ${info.messageId}`);
+      return { success: true, messageId: info.messageId };
+    } catch (error) {
+      console.error(`[Email] Failed to send password changed notification email to ${toEmail}:`, error.message);
+      throw error;
+    }
+  }
 }
 
 module.exports = new EmailService();

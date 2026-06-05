@@ -39,6 +39,11 @@ const AccountSchema = new Schema(
     },
 
     password: { type: String, required: true },
+
+    // Password reset fields — token is stored as SHA-256 hash, never raw
+    passwordResetToken: { type: String, default: null },
+    passwordResetExpires: { type: Date, default: null },
+    passwordChangedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );
@@ -46,7 +51,8 @@ const AccountSchema = new Schema(
 AccountSchema.pre("save", async function () {
   if (!this.isModified("password")) return;
 
-  const salt = await bcrypt.genSalt(10);
+  const rounds = parseInt(process.env.BCRYPT_ROUNDS, 10) || 10;
+  const salt = await bcrypt.genSalt(rounds);
   this.password = await bcrypt.hash(this.password, salt);
 });
 
